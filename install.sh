@@ -2,11 +2,26 @@
 set -euo pipefail
 
 # keyblade installer — registers Claude Code statusline and /kh skill
+# Supports two modes:
+#   Local:  bash install.sh [theme]        (run from cloned repo)
+#   Remote: bash <(curl -fsSL URL) [theme] (downloads files from GitHub)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="emoralesb05/claude-keyblade-statusbar"
+BRANCH="main"
+RAW_URL="https://raw.githubusercontent.com/$REPO/$BRANCH"
+
 BASE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 INSTALL_DIR="$BASE_DIR/hooks/keyblade"
 SETTINGS="$BASE_DIR/settings.json"
+
+# Detect local vs remote mode
+LOCAL_MODE=false
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "bash" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$SCRIPT_DIR/keyblade.py" ]; then
+    LOCAL_MODE=true
+  fi
+fi
 
 echo ""
 echo "  ====================================="
@@ -37,30 +52,54 @@ echo ""
 
 # Create install directory
 mkdir -p "$INSTALL_DIR"
+mkdir -p "$BASE_DIR/skills/kh"
 
-# Symlink core files
-ln -sf "$SCRIPT_DIR/keyblade.py" "$INSTALL_DIR/keyblade.py"
-ln -sf "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
-ln -sf "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+# --- Install files ---
 
-# Copy config only on fresh install (preserve user edits)
-if [ "$UPDATING" = false ]; then
-  cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/config.json"
-  echo "  Created config: $INSTALL_DIR/config.json"
+download_file() {
+  local url="$1"
+  local dest="$2"
+  echo "  Downloading $(basename "$dest")..."
+  curl -fsSL "$url" -o "$dest"
+}
+
+if [ "$LOCAL_MODE" = true ]; then
+  echo "  Installing from local source..."
+  # Copy files directly (no symlinks — works even if source dir is removed)
+  cp "$SCRIPT_DIR/keyblade.py" "$INSTALL_DIR/keyblade.py"
+  cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
+  cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+  cp "$SCRIPT_DIR/skills/kh/SKILL.md" "$BASE_DIR/skills/kh/SKILL.md"
+
+  if [ "$UPDATING" = false ]; then
+    cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/config.json"
+    echo "  Created config: $INSTALL_DIR/config.json"
+  else
+    echo "  Config preserved: $INSTALL_DIR/config.json"
+  fi
 else
-  echo "  Config preserved: $INSTALL_DIR/config.json"
+  echo "  Installing from GitHub..."
+  download_file "$RAW_URL/keyblade.py" "$INSTALL_DIR/keyblade.py"
+  download_file "$RAW_URL/VERSION" "$INSTALL_DIR/VERSION"
+  download_file "$RAW_URL/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+  download_file "$RAW_URL/skills/kh/SKILL.md" "$BASE_DIR/skills/kh/SKILL.md"
+
+  if [ "$UPDATING" = false ]; then
+    download_file "$RAW_URL/config.json" "$INSTALL_DIR/config.json"
+    echo "  Created config: $INSTALL_DIR/config.json"
+  else
+    echo "  Config preserved: $INSTALL_DIR/config.json"
+  fi
 fi
 
-# Install /kh skill
-SKILL_DIR="$BASE_DIR/skills/kh"
-mkdir -p "$SKILL_DIR"
-ln -sf "$SCRIPT_DIR/skills/kh/SKILL.md" "$SKILL_DIR/SKILL.md"
+chmod +x "$INSTALL_DIR/keyblade.py" "$INSTALL_DIR/uninstall.sh"
+
 echo "  Installed /kh skill"
 
 # Register statusLine in settings.json
 echo "  Configuring statusline..."
 python3 -c "
-import json, os, sys
+import json, os
 
 settings_path = '$SETTINGS'
 install_dir = '$INSTALL_DIR'

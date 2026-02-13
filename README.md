@@ -10,17 +10,25 @@ Kingdom Hearts themed statusline and command menu for Claude Code.
 
 ## Install
 
+One-liner (curl):
+
 ```bash
-brew install emoralesb05/tap/claude-keyblade-statusbar
-keyblade-setup
+bash <(curl -fsSL https://raw.githubusercontent.com/emoralesb05/claude-keyblade-statusbar/main/install.sh)
 ```
 
-Or install directly from source:
+Or clone and install:
 
 ```bash
 git clone https://github.com/emoralesb05/claude-keyblade-statusbar.git
 cd claude-keyblade-statusbar
 bash install.sh
+```
+
+Or via Homebrew:
+
+```bash
+brew install emoralesb05/tap/claude-keyblade-statusbar
+keyblade-setup
 ```
 
 ## Themes

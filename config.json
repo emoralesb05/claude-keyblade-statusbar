@@ -1,0 +1,19 @@
+{
+  "theme": "classic",
+  "mp_source": "cost_budget",
+  "mp_budget_usd": 5.00,
+  "keyblade_names": {
+    "opus": "Ultima Weapon",
+    "sonnet": "Oathkeeper",
+    "haiku": "Kingdom Key"
+  },
+  "show_munny": true,
+  "show_world": true,
+  "show_timer": true,
+  "colors": {
+    "hp": "green",
+    "mp": "blue",
+    "munny": "yellow",
+    "keyblade": "cyan"
+  }
+}

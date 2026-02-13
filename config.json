@@ -1,7 +1,17 @@
 {
   "theme": "classic",
-  "mp_source": "cost_budget",
-  "mp_budget_usd": 5.00,
+  "hp_source": "5_hour",
+  "hp_budget_usd": 5.00,
+  "hp_usage_cache_ttl": 60,
+  "show_drive": true,
+  "drive_max_lines": 500,
+  "drive_source": "lines",
+  "drive_bar_width": 10,
+  "drive_include_untracked": true,
+  "level_per": 100,
+  "level_curve": "linear",
+  "level_max": 99,
+  "level_source": "lines",
   "keyblade_names": {
     "opus": "Ultima Weapon",
     "sonnet": "Oathkeeper",
@@ -9,11 +19,16 @@
   },
   "show_munny": true,
   "show_world": true,
+  "show_branch": true,
+  "show_pr": true,
   "show_timer": true,
+  "world_fallback": "Traverse Town",
+  "world_map": {},
   "colors": {
     "hp": "green",
     "mp": "blue",
     "munny": "yellow",
-    "keyblade": "cyan"
+    "keyblade": "cyan",
+    "drive": "magenta"
   }
 }

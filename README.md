@@ -37,7 +37,7 @@ Three configurable themes via `config.json`:
 
 ### Classic (default)
 
-2-line display with HP bar (context remaining), MP bar (cost budget), keyblade name, world, and munny.
+2-line display with HP bar (plan usage), MP bar (context remaining), keyblade name, world, and munny.
 
 ### Minimal
 
@@ -45,7 +45,7 @@ Single-line display with keyblade name, world, HP percentage, and munny.
 
 ### Full RPG
 
-3-line display with HP/MP bars, keyblade name, level, world, drive gauge, EXP, munny, journey timer, and party member.
+3-line display with HP/MP bars, keyblade name, level, world:branch (#PR), drive gauge (uncommitted changes), EXP, munny, journey timer, and party member.
 
 ## Configuration
 
@@ -54,8 +54,18 @@ Edit `~/.claude/hooks/keyblade/config.json`:
 ```json
 {
   "theme": "classic",
-  "mp_source": "cost_budget",
-  "mp_budget_usd": 5.00,
+  "hp_source": "5_hour",
+  "hp_budget_usd": 5.00,
+  "hp_usage_cache_ttl": 60,
+  "show_drive": true,
+  "drive_max_lines": 500,
+  "drive_source": "lines",
+  "drive_bar_width": 10,
+  "drive_include_untracked": true,
+  "level_per": 100,
+  "level_curve": "linear",
+  "level_max": 99,
+  "level_source": "lines",
   "keyblade_names": {
     "opus": "Ultima Weapon",
     "sonnet": "Oathkeeper",
@@ -63,46 +73,80 @@ Edit `~/.claude/hooks/keyblade/config.json`:
   },
   "show_munny": true,
   "show_world": true,
+  "show_branch": true,
+  "show_pr": true,
   "show_timer": true,
+  "world_fallback": "Traverse Town",
+  "world_map": {},
   "colors": {
     "hp": "green",
     "mp": "blue",
     "munny": "yellow",
-    "keyblade": "cyan"
+    "keyblade": "cyan",
+    "drive": "magenta"
   }
 }
 ```
 
-### Options
+### HP (Plan Usage)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `hp_source` | `"5_hour"` | `5_hour`, `7_day` (Max/Pro), or `cost_budget` (API key users) |
+| `hp_budget_usd` | `5.00` | Budget when using `cost_budget` source |
+| `hp_usage_cache_ttl` | `60` | Seconds between plan usage API calls |
+
+### Level & EXP
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `level_per` | `100` | Units per level-up |
+| `level_curve` | `"linear"` | `linear` or `exponential` (RPG-style scaling) |
+| `level_max` | `99` | Level cap |
+| `level_source` | `"lines"` | `lines` (added+removed), `added_only`, `commits`, or `files` |
+
+EXP is tied to the same source as level.
+
+### Drive (Uncommitted Changes)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `show_drive` | `true` | Toggle drive gauge (full_rpg only) |
+| `drive_source` | `"lines"` | `lines`, `files`, or `both` |
+| `drive_max_lines` | `500` | Scale for 100% on the bar |
+| `drive_bar_width` | `10` | Character width of the bar |
+| `drive_include_untracked` | `true` | Count untracked files |
+| `colors.drive` | `"magenta"` | Drive bar color |
+
+### World
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `show_world` | `true` | Show world name |
+| `show_branch` | `true` | Append `:branch` to world name |
+| `show_pr` | `true` | Append `(#PR)` when a PR exists |
+| `world_fallback` | `"Traverse Town"` | Name when no directory detected |
+| `world_map` | `{}` | Map directory names to custom KH world names |
+
+### Display & Colors
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `theme` | `"classic"` | `classic`, `minimal`, or `full_rpg` |
-| `mp_source` | `"cost_budget"` | `cost_budget`, `context_remaining`, or `api_efficiency` |
-| `mp_budget_usd` | `5.00` | Budget for MP bar when using cost_budget source |
-| `keyblade_names` | see above | Model-to-keyblade name mapping |
 | `show_munny` | `true` | Show munny (cost) counter |
-| `show_world` | `true` | Show world (directory) name |
 | `show_timer` | `true` | Show journey timer (full_rpg only) |
-| `colors` | see above | ANSI color names for each element |
+| `colors.hp` | `"green"` | HP bar (auto-shifts yellow/red at low %) |
+| `colors.mp` | `"blue"` | MP bar |
+| `colors.munny` | `"yellow"` | Munny counter |
+| `colors.keyblade` | `"cyan"` | Keyblade name |
 
 ### Keyblade Names
 
-Models map to keyblade names:
-
-| Model | Default Keyblade |
-|-------|-----------------|
+| Model | Default |
+|-------|---------|
 | Opus | Ultima Weapon |
 | Sonnet | Oathkeeper |
 | Haiku | Kingdom Key |
-
-### MP Sources
-
-| Source | Description |
-|--------|-------------|
-| `cost_budget` | MP = remaining % of `mp_budget_usd` |
-| `context_remaining` | MP = context window remaining % |
-| `api_efficiency` | MP = API time / total time ratio |
 
 ## Command Menu
 

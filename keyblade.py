@@ -34,7 +34,6 @@ DEFAULT_CONFIG = {
     "show_munny": True,
     "show_world": True,
     "show_branch": True,
-    "show_pr": True,
     "show_timer": True,
     "world_fallback": "Traverse Town",
     "world_map": {},
@@ -227,11 +226,10 @@ def calculate_mp(data):
 
 
 def world_name(data, config=None):
-    """Convert workspace directory to world name with git branch and PR.
+    """Convert workspace directory to world name with git branch.
 
     Config options:
       show_branch    — append :branch to world name
-      show_pr        — append (#PR) when a PR exists
       world_fallback — name when no directory found
       world_map      — map directory names to custom names
     """
@@ -259,14 +257,6 @@ def world_name(data, config=None):
             branch = r.stdout.strip() if r.returncode == 0 else ""
             if branch:
                 name = f"{name}:{branch}"
-                if config.get("show_pr", True):
-                    r = subprocess.run(
-                        ["gh", "pr", "view", "--json", "number", "-q", ".number"],
-                        capture_output=True, text=True, cwd=current, timeout=3,
-                    )
-                    pr_num = r.stdout.strip() if r.returncode == 0 else ""
-                    if pr_num:
-                        name = f"{name} (#{pr_num})"
     except (subprocess.SubprocessError, OSError):
         pass
 

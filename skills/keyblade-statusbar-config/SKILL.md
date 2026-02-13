@@ -133,9 +133,6 @@ Show the world (directory) name. true/false.
 ### show_branch
 Show the git branch name after the directory (e.g. `myapp:main`). true/false. Default: true.
 
-### show_pr
-Show the PR number when one exists (e.g. `myapp:feature (#42)`). true/false. Default: true. Requires `gh` CLI.
-
 ### world_fallback
 The world name shown when no directory is detected. Default: "Traverse Town".
 

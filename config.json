@@ -20,7 +20,6 @@
   "show_munny": true,
   "show_world": true,
   "show_branch": true,
-  "show_pr": true,
   "show_timer": true,
   "world_fallback": "Traverse Town",
   "world_map": {},

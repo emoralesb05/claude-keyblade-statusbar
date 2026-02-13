@@ -132,14 +132,6 @@ class TestWorldName(unittest.TestCase):
         result = keyblade.world_name(data, config)
         self.assertEqual(result, "myapp")
 
-    def test_no_pr(self):
-        data = make_data(workspace={"current_dir": "/Users/ed/keyblade"})
-        config = dict(keyblade.DEFAULT_CONFIG)
-        config["show_pr"] = False
-        result = keyblade.world_name(data, config)
-        # Should have branch but no PR
-        self.assertNotIn("#", result)
-
 
 class TestFormatDuration(unittest.TestCase):
     def test_seconds(self):

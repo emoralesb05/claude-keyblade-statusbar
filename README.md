@@ -74,7 +74,6 @@ Edit `~/.claude/hooks/keyblade/config.json`:
   "show_munny": true,
   "show_world": true,
   "show_branch": true,
-  "show_pr": true,
   "show_timer": true,
   "world_fallback": "Traverse Town",
   "world_map": {},
@@ -124,7 +123,6 @@ EXP is tied to the same source as level.
 |-----|---------|-------------|
 | `show_world` | `true` | Show world name |
 | `show_branch` | `true` | Append `:branch` to world name |
-| `show_pr` | `true` | Append `(#PR)` when a PR exists |
 | `world_fallback` | `"Traverse Town"` | Name when no directory detected |
 | `world_map` | `{}` | Map directory names to custom KH world names |
 

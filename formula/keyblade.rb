@@ -113,7 +113,7 @@ class Keyblade < Formula
       settings['statusLine'] = {
           'type': 'command',
           'command': f'python3 {install_dir}/keyblade.py',
-          'padding': 1
+          'padding': 0
       }
 
       with open(settings_path, 'w') as f:

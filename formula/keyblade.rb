@@ -13,7 +13,7 @@ class Keyblade < Formula
     libexec.install "VERSION"
     libexec.install "install.sh"
     libexec.install "uninstall.sh"
-    (libexec/"skills/kh").install "skills/kh/SKILL.md"
+    (libexec/"skills/kh-menu").install "skills/kh-menu/SKILL.md"
 
     (bin/"keyblade-setup").write <<~BASH
       #!/bin/bash
@@ -79,11 +79,11 @@ class Keyblade < Formula
         echo "  Config preserved: $INSTALL_DIR/config.json"
       fi
 
-      # Install /kh skill
-      SKILL_DIR="$BASE_DIR/skills/kh"
+      # Install /kh-menu skill
+      SKILL_DIR="$BASE_DIR/skills/kh-menu"
       mkdir -p "$SKILL_DIR"
-      ln -sf "$LIBEXEC/skills/kh/SKILL.md" "$SKILL_DIR/SKILL.md"
-      echo "  Installed /kh skill"
+      ln -sf "$LIBEXEC/skills/kh-menu/SKILL.md" "$SKILL_DIR/SKILL.md"
+      echo "  Installed /kh-menu skill"
 
       # Register statusLine in settings.json
       echo "  Configuring statusline..."
@@ -150,7 +150,7 @@ class Keyblade < Formula
       echo "  Themes: classic (default), minimal, full_rpg"
       echo ""
       echo "  Commands:"
-      echo "    /kh  — Open the Kingdom Hearts command menu"
+      echo "    /kh-menu  — Open the Kingdom Hearts command menu"
       echo ""
       echo "  The Keyblade has chosen you."
       echo ""
@@ -162,7 +162,7 @@ class Keyblade < Formula
       To complete setup, run:
         keyblade-setup
 
-      This configures the Claude Code statusline and installs the /kh skill.
+      This configures the Claude Code statusline and installs the /kh-menu skill.
 
       Options:
         keyblade-setup                    Install with classic theme
@@ -170,7 +170,7 @@ class Keyblade < Formula
         keyblade-setup --theme=full_rpg   Use full RPG theme
         keyblade-setup --uninstall        Remove keyblade
 
-      After setup, use /kh in Claude Code to open the command menu.
+      After setup, use /kh-menu in Claude Code to open the command menu.
     EOS
   end
 

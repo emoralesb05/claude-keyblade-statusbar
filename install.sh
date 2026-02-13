@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# keyblade installer — registers Claude Code statusline and /kh skill
+# keyblade installer — registers Claude Code statusline and /kh-menu skill
 # Supports two modes:
 #   Local:  bash install.sh [theme]        (run from cloned repo)
 #   Remote: bash <(curl -fsSL URL) [theme] (downloads files from GitHub)
@@ -52,7 +52,7 @@ echo ""
 
 # Create install directory
 mkdir -p "$INSTALL_DIR"
-mkdir -p "$BASE_DIR/skills/kh"
+mkdir -p "$BASE_DIR/skills/kh-menu"
 mkdir -p "$BASE_DIR/skills/keyblade-statusbar-config"
 
 # --- Install files ---
@@ -70,7 +70,7 @@ if [ "$LOCAL_MODE" = true ]; then
   cp "$SCRIPT_DIR/keyblade.py" "$INSTALL_DIR/keyblade.py"
   cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
   cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
-  cp "$SCRIPT_DIR/skills/kh/SKILL.md" "$BASE_DIR/skills/kh/SKILL.md"
+  cp "$SCRIPT_DIR/skills/kh-menu/SKILL.md" "$BASE_DIR/skills/kh-menu/SKILL.md"
   cp "$SCRIPT_DIR/skills/keyblade-statusbar-config/SKILL.md" "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
 
   if [ "$UPDATING" = false ]; then
@@ -84,7 +84,7 @@ else
   download_file "$RAW_URL/keyblade.py" "$INSTALL_DIR/keyblade.py"
   download_file "$RAW_URL/VERSION" "$INSTALL_DIR/VERSION"
   download_file "$RAW_URL/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
-  download_file "$RAW_URL/skills/kh/SKILL.md" "$BASE_DIR/skills/kh/SKILL.md"
+  download_file "$RAW_URL/skills/kh-menu/SKILL.md" "$BASE_DIR/skills/kh-menu/SKILL.md"
   download_file "$RAW_URL/skills/keyblade-statusbar-config/SKILL.md" "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
 
   if [ "$UPDATING" = false ]; then
@@ -97,7 +97,7 @@ fi
 
 chmod +x "$INSTALL_DIR/keyblade.py" "$INSTALL_DIR/uninstall.sh"
 
-echo "  Installed /kh and /keyblade-statusbar-config skills"
+echo "  Installed /kh-menu and /keyblade-statusbar-config skills"
 
 # Register statusLine in settings.json
 echo "  Configuring statusline..."
@@ -168,7 +168,7 @@ echo "  Config: $INSTALL_DIR/config.json"
 echo "  Themes: classic (default), minimal, full_rpg"
 echo ""
 echo "  Commands:"
-echo "    /kh                        — Kingdom Hearts command menu"
+echo "    /kh-menu                   — Kingdom Hearts command menu"
 echo "    /keyblade-statusbar-config — Change settings"
 echo ""
 echo "  The Keyblade has chosen you."

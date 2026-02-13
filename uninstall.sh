@@ -45,7 +45,7 @@ with open(settings_path, 'w') as f:
 fi
 
 # Remove skills
-for skill in kh keyblade-statusbar-config; do
+for skill in kh-menu keyblade-statusbar-config; do
   SKILL_DIR="$BASE_DIR/skills/$skill"
   if [ -d "$SKILL_DIR" ]; then
     rm -rf "$SKILL_DIR"

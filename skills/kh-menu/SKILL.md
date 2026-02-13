@@ -1,12 +1,12 @@
 ---
-name: kh
+name: kh-menu
 description: "Kingdom Hearts Command Menu — presents contextual dev actions as Attack, Magic, Items, and Summon."
 user_invocable: true
 ---
 
 # Kingdom Hearts Command Menu
 
-When the user invokes /kh, present a Kingdom Hearts battle menu. Deeply analyze the current project context and populate each category with specific, actionable options tailored to the current state of the codebase.
+When the user invokes /kh-menu, present a Kingdom Hearts battle menu. Deeply analyze the current project context and populate each category with specific, actionable options tailored to the current state of the codebase.
 
 ## Menu Format
 

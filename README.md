@@ -6,7 +6,7 @@ Kingdom Hearts themed statusline and command menu for Claude Code.
 
 **Keyblade Status Line** — HP/MP bars, keyblade name, munny counter, and more displayed in the Claude Code status bar.
 
-**Command Menu** — `/kh` slash command that presents contextual dev actions organized as Attack, Magic, Items, and Summon in KH battle menu style.
+**Command Menu** — `/kh-menu` slash command that presents contextual dev actions organized as Attack, Magic, Items, and Summon in KH battle menu style.
 
 ## Install
 
@@ -148,7 +148,7 @@ EXP is tied to the same source as level.
 
 ## Command Menu
 
-Use `/kh` in Claude Code to open the command menu. Claude analyzes your project and presents relevant actions in four KH-themed categories:
+Use `/kh-menu` in Claude Code to open the command menu. Claude analyzes your project and presents relevant actions in four KH-themed categories:
 
 - **Attack** — Direct actions (run tests, build, commit, lint)
 - **Magic** — Code transformations (refactor, fix bugs, optimize)

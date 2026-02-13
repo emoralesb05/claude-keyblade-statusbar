@@ -44,12 +44,14 @@ with open(settings_path, 'w') as f:
 "
 fi
 
-# Remove skill
-SKILL_DIR="$BASE_DIR/skills/kh"
-if [ -d "$SKILL_DIR" ]; then
-  rm -rf "$SKILL_DIR"
-  echo "  Removed /kh skill"
-fi
+# Remove skills
+for skill in kh keyblade-statusbar-config; do
+  SKILL_DIR="$BASE_DIR/skills/$skill"
+  if [ -d "$SKILL_DIR" ]; then
+    rm -rf "$SKILL_DIR"
+    echo "  Removed /$skill skill"
+  fi
+done
 
 # Remove install directory
 if [ -d "$INSTALL_DIR" ]; then

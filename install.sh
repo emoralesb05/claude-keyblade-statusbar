@@ -53,6 +53,7 @@ echo ""
 # Create install directory
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$BASE_DIR/skills/kh"
+mkdir -p "$BASE_DIR/skills/keyblade-statusbar-config"
 
 # --- Install files ---
 
@@ -70,6 +71,7 @@ if [ "$LOCAL_MODE" = true ]; then
   cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
   cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   cp "$SCRIPT_DIR/skills/kh/SKILL.md" "$BASE_DIR/skills/kh/SKILL.md"
+  cp "$SCRIPT_DIR/skills/keyblade-statusbar-config/SKILL.md" "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
 
   if [ "$UPDATING" = false ]; then
     cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/config.json"
@@ -83,6 +85,7 @@ else
   download_file "$RAW_URL/VERSION" "$INSTALL_DIR/VERSION"
   download_file "$RAW_URL/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   download_file "$RAW_URL/skills/kh/SKILL.md" "$BASE_DIR/skills/kh/SKILL.md"
+  download_file "$RAW_URL/skills/keyblade-statusbar-config/SKILL.md" "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
 
   if [ "$UPDATING" = false ]; then
     download_file "$RAW_URL/config.json" "$INSTALL_DIR/config.json"
@@ -94,7 +97,7 @@ fi
 
 chmod +x "$INSTALL_DIR/keyblade.py" "$INSTALL_DIR/uninstall.sh"
 
-echo "  Installed /kh skill"
+echo "  Installed /kh and /keyblade-statusbar-config skills"
 
 # Register statusLine in settings.json
 echo "  Configuring statusline..."
@@ -165,7 +168,8 @@ echo "  Config: $INSTALL_DIR/config.json"
 echo "  Themes: classic (default), minimal, full_rpg"
 echo ""
 echo "  Commands:"
-echo "    /kh  — Open the Kingdom Hearts command menu"
+echo "    /kh                        — Kingdom Hearts command menu"
+echo "    /keyblade-statusbar-config — Change settings"
 echo ""
 echo "  The Keyblade has chosen you."
 echo ""

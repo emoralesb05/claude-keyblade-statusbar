@@ -35,6 +35,13 @@ DEFAULT_CONFIG = {
     "show_world": True,
     "show_branch": True,
     "show_timer": True,
+    "show_drive_form": True,
+    "drive_form_names": {
+        "low": "Valor Form",
+        "medium": "Wisdom Form",
+        "high": "Master Form",
+        "max": "Final Form",
+    },
     "world_fallback": "Traverse Town",
     "world_map": {},
     "colors": {
@@ -97,7 +104,7 @@ def load_config():
             user_config = json.load(f)
         config.update(user_config)
         # Deep merge nested dicts
-        for key in ("colors", "keyblade_names"):
+        for key in ("colors", "keyblade_names", "drive_form_names"):
             if key in DEFAULT_CONFIG and key in user_config:
                 merged = dict(DEFAULT_CONFIG[key])
                 merged.update(user_config[key])
@@ -404,6 +411,47 @@ def hp_color(pct):
     return ANSI["red"]
 
 
+def resolve_drive_form(data, config=None):
+    """Resolve current Drive Form name from reasoning effort level.
+
+    Priority:
+      1. Statusbar JSON 'effort' or 'reasoning_effort' (future-proof)
+      2. ~/.claude/settings.json 'effortLevel'
+      3. CLAUDE_CODE_EFFORT_LEVEL env var
+      4. Default: 'high' (Master Form)
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    names = config.get("drive_form_names", DEFAULT_CONFIG["drive_form_names"])
+
+    # 1. Check statusbar data (future-proof)
+    effort = data.get("effort") or data.get("reasoning_effort")
+
+    # 2. Read from Claude Code settings
+    if not effort:
+        config_dir = os.environ.get(
+            "CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")
+        )
+        settings_path = os.path.join(config_dir, "settings.json")
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+            effort = settings.get("effortLevel")
+        except (FileNotFoundError, json.JSONDecodeError, PermissionError):
+            pass
+
+    # 3. Check environment variable
+    if not effort:
+        effort = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+
+    # 4. Default to high
+    if not effort:
+        effort = "high"
+
+    effort = effort.lower()
+    return names.get(effort, names.get("high", "Master Form"))
+
+
 # ─── Bar Rendering ───────────────────────────────────────────────
 
 def render_bar(label, percentage, width, color, show_pct=True):
@@ -455,7 +503,13 @@ def render_classic(data, config):
     kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
     mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
 
+    dc = ANSI.get(colors.get("drive", "magenta"), ANSI["magenta"])
+
     parts = [f"  {kc}{KEYBLADE_ICON} {bld}{keyblade}{rst}"]
+
+    if config.get("show_drive_form", True):
+        form = resolve_drive_form(data, config)
+        parts.append(f"{dc}{DRIVE_ICON}{form}{rst}")
 
     if config.get("show_world", True):
         world = world_name(data, config)
@@ -493,7 +547,15 @@ def render_minimal(data, config):
     hc = hp_color(hp_pct)
     hp_str = f"{hc}{bld}{hp_pct:.0f}%{rst}" if hp_pct <= 20 else f"{hc}{hp_pct:.0f}%{rst}"
 
+    dc = ANSI.get(colors.get("drive", "magenta"), ANSI["magenta"])
+
     parts = [f"{kc}{KEYBLADE_ICON} {keyblade}{rst}"]
+
+    if config.get("show_drive_form", True):
+        form = resolve_drive_form(data, config)
+        # Strip " Form" suffix for compact display
+        short_form = form.replace(" Form", "")
+        parts.append(f"{dc}{DRIVE_ICON}{short_form}{rst}")
 
     if config.get("show_world", True):
         world = world_name(data, config)
@@ -565,7 +627,8 @@ def render_full_rpg(data, config):
         drive_pct = min(100.0, (drive_val / drive_max * 100)) if drive_max > 0 else 0
         drive_color = colors.get("drive", "magenta")
         drive_width = config.get("drive_bar_width", 10)
-        drive_bar = render_bar(f"{DRIVE_ICON}Drive", drive_pct, drive_width, drive_color)
+        form_name = resolve_drive_form(data, config) if config.get("show_drive_form", True) else "Drive"
+        drive_bar = render_bar(f"{DRIVE_ICON}{form_name}", drive_pct, drive_width, drive_color)
         line3_parts.append(f"  {drive_bar}")
     line3_parts.append(f"{EXP_ICON} {exp} EXP")
 

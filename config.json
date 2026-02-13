@@ -21,6 +21,13 @@
   "show_world": true,
   "show_branch": true,
   "show_timer": true,
+  "show_drive_form": true,
+  "drive_form_names": {
+    "low": "Valor Form",
+    "medium": "Wisdom Form",
+    "high": "Master Form",
+    "max": "Final Form"
+  },
   "world_fallback": "Traverse Town",
   "world_map": {},
   "colors": {

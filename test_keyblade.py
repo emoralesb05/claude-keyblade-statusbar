@@ -341,11 +341,11 @@ class TestFullRPGTheme(unittest.TestCase):
         output = keyblade.render_full_rpg(data, config)
         self.assertIn("Lv.", output)
 
-    def test_contains_drive(self):
+    def test_contains_drive_form(self):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
         output = keyblade.render_full_rpg(data, config)
-        self.assertIn("Drive", output)
+        self.assertIn("Form", output)
 
     def test_contains_exp(self):
         data = make_data()
@@ -396,6 +396,146 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(config["theme"], "classic")
         self.assertEqual(config["hp_usage_cache_ttl"], 60)
         del os.environ["CLAUDE_CONFIG_DIR"]
+
+
+class TestResolveDriveForm(unittest.TestCase):
+    def setUp(self):
+        # Ensure no env var leaks between tests
+        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        # Point config dir to nonexistent path so settings.json isn't read
+        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
+
+    def tearDown(self):
+        if self.orig_env is not None:
+            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
+        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
+            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
+        if self.orig_config_dir is not None:
+            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
+        elif "CLAUDE_CONFIG_DIR" in os.environ:
+            del os.environ["CLAUDE_CONFIG_DIR"]
+
+    def test_default_is_master_form(self):
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Master Form")
+
+    def test_low_effort_from_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Valor Form")
+
+    def test_medium_effort_from_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "medium"
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Wisdom Form")
+
+    def test_high_effort_from_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "high"
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Master Form")
+
+    def test_data_effort_takes_priority(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "high"
+        data = make_data()
+        data["effort"] = "low"
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Valor Form")
+
+    def test_data_reasoning_effort_field(self):
+        data = make_data()
+        data["reasoning_effort"] = "medium"
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Wisdom Form")
+
+    def test_custom_form_names(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["drive_form_names"] = {
+            "low": "Anti Form",
+            "medium": "Limit Form",
+            "high": "Final Form",
+        }
+        result = keyblade.resolve_drive_form(data, config)
+        self.assertEqual(result, "Anti Form")
+
+    def test_max_effort_from_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Final Form")
+
+    def test_unknown_effort_falls_back_to_high(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "turbo"
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Master Form")
+
+
+class TestDriveFormInThemes(unittest.TestCase):
+    def setUp(self):
+        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
+        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
+
+    def tearDown(self):
+        if self.orig_config_dir is not None:
+            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
+        elif "CLAUDE_CONFIG_DIR" in os.environ:
+            del os.environ["CLAUDE_CONFIG_DIR"]
+        if self.orig_env is not None:
+            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
+        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
+            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
+
+    def test_full_rpg_shows_form_name(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_full_rpg(data, config)
+        self.assertIn("Valor Form", output)
+        self.assertNotIn("Drive", output.split("Valor Form")[0].split("\n")[-1])
+
+    def test_classic_shows_form_name(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_classic(data, config)
+        self.assertIn("Valor Form", output)
+
+    def test_minimal_shows_short_form_name(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_minimal(data, config)
+        self.assertIn("Valor", output)
+        # Minimal strips " Form" suffix
+        self.assertNotIn("Valor Form", output)
+
+    def test_show_drive_form_false_hides_in_classic(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["show_drive_form"] = False
+        output = keyblade.render_classic(data, config)
+        self.assertNotIn("Valor", output)
+
+    def test_show_drive_form_false_hides_in_minimal(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["show_drive_form"] = False
+        output = keyblade.render_minimal(data, config)
+        self.assertNotIn("Valor", output)
+
+    def test_show_drive_form_false_shows_drive_in_full_rpg(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["show_drive_form"] = False
+        output = keyblade.render_full_rpg(data, config)
+        self.assertIn("Drive", output)
+        self.assertNotIn("Valor", output)
 
 
 if __name__ == "__main__":

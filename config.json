@@ -4,7 +4,7 @@
   "hp_budget_usd": 5.00,
   "hp_usage_cache_ttl": 60,
   "show_drive": true,
-  "drive_max_lines": 500,
+  "drive_max_lines": 1000,
   "drive_source": "lines",
   "drive_bar_width": 10,
   "drive_include_untracked": true,

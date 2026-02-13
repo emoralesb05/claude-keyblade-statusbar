@@ -369,6 +369,27 @@ def calculate_drive(data, config=None):
                         lines += a + d
                     except ValueError:
                         pass
+
+        # Count lines in untracked files (git diff can't see these)
+        if include_untracked:
+            r = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                capture_output=True, text=True, cwd=work_dir, timeout=3,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                for fpath in r.stdout.strip().split("\n"):
+                    if not fpath.strip():
+                        continue
+                    try:
+                        fr = subprocess.run(
+                            ["wc", "-l", fpath],
+                            capture_output=True, text=True, cwd=work_dir, timeout=2,
+                        )
+                        if fr.returncode == 0:
+                            lines += int(fr.stdout.strip().split()[0])
+                    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+                        pass
+
         return files, lines
     except (subprocess.SubprocessError, OSError):
         return 0, 0

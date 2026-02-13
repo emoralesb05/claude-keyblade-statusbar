@@ -17,7 +17,7 @@ Present the menu as INTERACTIVE selections using the AskUserQuestion tool. Use T
 - question: "COMMAND MENU — Select a category"
 - options: One per category with the best/most relevant option previewed in the description
   - label: "Attack" / "Magic" / "Items" / "Summon"
-  - description: Preview the top action, e.g. "Run tests, commit, push..."
+  - description: Preview the top action, e.g. "Strike Raid: run tests, Sonic Blade: commit..."
 
 ### Question 2: After category is selected, show that category's options
 - header: The category name (e.g. "Attack")
@@ -29,22 +29,30 @@ Present the menu as INTERACTIVE selections using the AskUserQuestion tool. Use T
 After the user selects an action, EXECUTE it immediately. Do not ask for confirmation.
 
 ### KH Flavor
-- For Magic options, prefix labels with spell names: "Cure —", "Fire —", "Thunder —", "Reflect —"
-- For Summon options, prefix with character names: "Donald —", "Goofy —", "Riku —", "Naminé —"
+- For Attack options, prefix labels with ability names: "Strike Raid —", "Sonic Blade —", etc.
+- For Magic options, prefix labels with spell names: "Cure —", "Fire —", "Thunder —", etc.
+- For Items options, prefix labels with item names: "Potion —", "Ether —", "Elixir —", etc.
+- For Summon options, prefix with character names: "Donald —", "Goofy —", "Riku —", etc.
 
 ## Category Definitions
 
 ### ATTACK (action-oriented, direct execution)
 
-Things that DO something to the codebase or project:
-- Run tests (detect framework: brew tests, npm test, pytest, cargo test, etc.)
-- Build the project
-- Create a commit
-- Push changes
-- Run linters/formatters
-- Deploy
+Things that DO something to the codebase or project. Name each attack after a KH ability:
 
-Analyze the project to determine which actions make sense. For a Ruby/Homebrew project, suggest `brew tests`, `brew typecheck`, `brew style`. For Node, suggest `npm test`, `npm run build`, etc.
+#### Ability Reference — match the ability to the action:
+| Ability | Use for | Example |
+|---------|---------|---------|
+| **Strike Raid** | Run tests (throw and see what hits) | "Strike Raid — Run pytest" |
+| **Sonic Blade** | Run linters/formatters (fast, clean cuts) | "Sonic Blade — Run eslint --fix" |
+| **Ars Arcanum** | Build the project (combo of steps) | "Ars Arcanum — npm run build" |
+| **Ragnarok** | Deploy (the big finisher) | "Ragnarok — Deploy to production" |
+| **Sliding Dash** | Push changes (dash forward) | "Sliding Dash — Push to origin" |
+| **Zantetsuken** | Create a commit (one clean cut) | "Zantetsuken — Commit all changes" |
+| **Ripple Drive** | Run full CI pipeline locally | "Ripple Drive — lint + test + build" |
+| **Stun Impact** | Kill processes, clean up | "Stun Impact — Kill stale dev servers" |
+
+Analyze the project to determine which actions make sense. For a Python project, suggest `pytest`. For Node, suggest `npm test`, `npm run build`, etc. Also check for available skills/commands (like `/commit`) and suggest those where relevant.
 
 ### MAGIC (transformative, requires skill — context-driven)
 
@@ -56,8 +64,6 @@ Things that CHANGE code intelligently. Magic options should be SPECIFIC, not gen
 - **TODO/FIXME/HACK**: Grep for `TODO|FIXME|HACK|XXX` in recently modified files. Suggest resolving specific ones.
 - **Code Smells**: Look at recent git diff for long functions, duplicated code, missing error handling. Suggest specific refactors.
 - **Type Errors / Lint Warnings**: Check for linter/type-checker output if available.
-
-Magic options should read like spells with targets. Pick the spell that best matches the action:
 
 #### Spell Reference — match the spell to the situation:
 | Spell | Use for | Example |
@@ -81,14 +87,19 @@ NOT generic options like "Refactor a module" or "Fix a bug". Always pick the rig
 
 ### ITEMS (informational, read-only)
 
-Things that SHOW you information:
-- Git status / diff
-- Recent git log
-- Show open TODOs
-- Test coverage
-- Dependency audit
-- Code statistics
-- Open PRs awaiting review
+Things that SHOW you information. Name each item after a KH consumable:
+
+#### Item Reference — match the item to the info:
+| Item | Use for | Example |
+|------|---------|---------|
+| **Potion** | Quick status check (git status/diff) | "Potion — Git status & diff" |
+| **Ether** | Show context/resource info (coverage, stats) | "Ether — Test coverage report" |
+| **Elixir** | Full project health check | "Elixir — Code stats (LOC, funcs, tests)" |
+| **Mega-Potion** | Show recent history (git log) | "Mega-Potion — Recent git log (10 commits)" |
+| **Hi-Potion** | Show open issues/PRs | "Hi-Potion — Open PRs awaiting review" |
+| **Megalixir** | Full dependency/security audit | "Megalixir — Dependency audit" |
+| **Tent** | Show TODOs/FIXMEs across codebase | "Tent — Show open TODOs (all files)" |
+| **Save Point** | Show current branch/stash state | "Save Point — Branches & stashes" |
 
 ### SUMMON (delegative, spawns complex workflows — party-aware)
 
@@ -105,26 +116,41 @@ Things that ORCHESTRATE multiple steps. Before populating, check for running sub
   - Comprehensive code review across multiple files
   - Security audit with dedicated agent
 
-Name summons after KH characters when spawning agents:
-- Security review → "Summon Donald" (defensive magic)
-- Test generation → "Summon Goofy" (reliable support)
-- Code review → "Summon Riku" (rival's sharp eye)
-- Documentation → "Summon Naminé" (the chronicler)
-- PR creation → "Summon Kairi" (the heart that connects)
-- Bug investigation → "Summon Roxas" (sees what others miss)
-- Full pipeline orchestration → "Summon Mickey" (the King, runs everything)
+#### Character Reference — match the character to the workflow:
+| Character | Role | Example |
+|-----------|------|---------|
+| **Donald** | Security review (defensive magic) | "Donald — Security audit" |
+| **Goofy** | Test generation (reliable support) | "Goofy — Generate test suite" |
+| **Riku** | Code review (rival's sharp eye) | "Riku — Review all changes" |
+| **Naminé** | Documentation (the chronicler) | "Naminé — Generate changelog" |
+| **Kairi** | PR creation (the heart that connects) | "Kairi — Create PR with description" |
+| **Roxas** | Bug investigation (sees what others miss) | "Roxas — Investigate flaky test" |
+| **Mickey** | Full pipeline (the King, runs everything) | "Mickey — Lint + test + build + deploy" |
+
+## Skill & Command Awareness
+
+Before building the menu, check what skills and commands are available in the current session. Look for installed skills that could be surfaced as options:
+
+- If a `/commit` skill exists → suggest it under Attack (as "Zantetsuken — /commit")
+- If a `/review-pr` skill exists → suggest it under Summon
+- If a `/find-skills` skill exists → mention it if no good options are found for a category
+- Check the system-reminder at the top of messages for available skill names
+- When a skill matches an action, prefer invoking the skill over raw commands
+
+This makes the menu a hub that connects to the user's full toolkit.
 
 ## Rules
 
 1. AT MOST 4 options per category (like KH's menu slots)
 2. Number each option for easy selection
-3. Only suggest actions that are relevant — don't suggest "Deploy" if there's no deploy config
+3. Only suggest actions that are relevant — don't suggest "Ragnarok — Deploy" if there's no deploy config
 4. Magic options MUST be specific to the current codebase state, never generic
 5. When the user picks an option (by number or description), execute it immediately
 6. Report results in KH flavor:
    - Success: "Obtained [result]!" or "[Action] complete! Gained [X] EXP!"
    - Failure: "The attack missed!" or "Not enough MP!" followed by the actual error
 7. If the user just says a number, match it to the most recently presented menu
+8. Surface relevant installed skills/commands where they fit a category
 
 ## Context Analysis
 
@@ -136,5 +162,6 @@ Before presenting the menu, silently analyze (run these in parallel where possib
 - `gh pr view --json number,title,reviewDecision,statusCheckRollup` if on a PR branch
 - `gh run list --limit 3 --json status,conclusion,name` for CI status
 - Grep for `TODO|FIXME|HACK` in recently changed files (`git diff --name-only HEAD~5` then grep those files)
+- Check available skills in the session (from system-reminder tags)
 
 Use this context to populate the menu with RELEVANT, SPECIFIC options only. The more specific each option is, the more useful the menu becomes.

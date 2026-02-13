@@ -140,16 +140,35 @@ def get_plan_usage(config):
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
         pass
 
-    # Extract OAuth token from macOS Keychain
+    # Extract OAuth token — macOS Keychain or Linux credential file
     try:
-        r = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode != 0:
-            return 0, 0
-        creds = json.loads(r.stdout.strip())
-        token = creds.get("claudeAiOauth", {}).get("accessToken", "")
+        token = ""
+        if sys.platform == "darwin":
+            r = subprocess.run(
+                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                creds = json.loads(r.stdout.strip())
+                token = creds.get("claudeAiOauth", {}).get("accessToken", "")
+        else:
+            # Linux: try reading from Claude Code credential store
+            cred_paths = [
+                os.path.expanduser("~/.claude/credentials.json"),
+                os.path.join(
+                    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+                    "claude-code", "credentials.json",
+                ),
+            ]
+            for cred_path in cred_paths:
+                try:
+                    with open(cred_path) as f:
+                        creds = json.load(f)
+                    token = creds.get("claudeAiOauth", {}).get("accessToken", "")
+                    if token:
+                        break
+                except (FileNotFoundError, json.JSONDecodeError, KeyError):
+                    continue
         if not token:
             return 0, 0
 

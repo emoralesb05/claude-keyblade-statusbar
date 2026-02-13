@@ -99,7 +99,9 @@ class TestCalculateMP(unittest.TestCase):
 class TestWorldName(unittest.TestCase):
     def test_normal_dir(self):
         data = make_data()
-        self.assertEqual(keyblade.world_name(data), "myapp")
+        # world_name will try git commands which may add branch info
+        result = keyblade.world_name(data)
+        self.assertTrue(result.startswith("myapp"))
 
     def test_empty_workspace(self):
         data = make_data(workspace={})
@@ -108,6 +110,35 @@ class TestWorldName(unittest.TestCase):
     def test_root_dir(self):
         data = make_data(workspace={"current_dir": "/"})
         self.assertEqual(keyblade.world_name(data), "Traverse Town")
+
+    def test_custom_fallback(self):
+        data = make_data(workspace={})
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["world_fallback"] = "Destiny Islands"
+        self.assertEqual(keyblade.world_name(data, config), "Destiny Islands")
+
+    def test_world_map(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["world_map"] = {"myapp": "Hollow Bastion"}
+        config["show_branch"] = False
+        result = keyblade.world_name(data, config)
+        self.assertEqual(result, "Hollow Bastion")
+
+    def test_no_branch(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["show_branch"] = False
+        result = keyblade.world_name(data, config)
+        self.assertEqual(result, "myapp")
+
+    def test_no_pr(self):
+        data = make_data(workspace={"current_dir": "/Users/ed/keyblade"})
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["show_pr"] = False
+        result = keyblade.world_name(data, config)
+        # Should have branch but no PR
+        self.assertNotIn("#", result)
 
 
 class TestFormatDuration(unittest.TestCase):
@@ -156,6 +187,41 @@ class TestCalculateLevel(unittest.TestCase):
         # 1000 total = level 11
         self.assertEqual(keyblade.calculate_level(data), 11)
 
+    def test_custom_per(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 50
+        data["cost"]["total_lines_removed"] = 0
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["level_per"] = 50
+        # 50 lines / 50 per = level 2
+        self.assertEqual(keyblade.calculate_level(data, config), 2)
+
+    def test_exponential_curve(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 300
+        data["cost"]["total_lines_removed"] = 0
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["level_curve"] = "exponential"
+        # Triangular: L = (1 + sqrt(1 + 8*300/100)) / 2 = (1 + sqrt(25)) / 2 = 3
+        self.assertEqual(keyblade.calculate_level(data, config), 3)
+
+    def test_max_cap(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 999999
+        data["cost"]["total_lines_removed"] = 0
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["level_max"] = 10
+        self.assertEqual(keyblade.calculate_level(data, config), 10)
+
+    def test_added_only_source(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 100
+        data["cost"]["total_lines_removed"] = 500
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["level_source"] = "added_only"
+        # Only 100 added, ignores 500 removed
+        self.assertEqual(keyblade.calculate_level(data, config), 2)
+
 
 class TestCalculateExp(unittest.TestCase):
     def test_default_data(self):
@@ -174,6 +240,15 @@ class TestCalculateExp(unittest.TestCase):
         data["cost"]["total_lines_added"] = None
         data["cost"]["total_lines_removed"] = None
         self.assertEqual(keyblade.calculate_exp(data), 0)
+
+    def test_added_only_source(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 100
+        data["cost"]["total_lines_removed"] = 50
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["level_source"] = "added_only"
+        # EXP tied to same source as level
+        self.assertEqual(keyblade.calculate_exp(data, config), 100)
 
 
 class TestBarRendering(unittest.TestCase):

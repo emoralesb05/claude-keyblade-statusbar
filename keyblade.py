@@ -14,8 +14,18 @@ import urllib.request
 
 DEFAULT_CONFIG = {
     "theme": "classic",
+    "hp_source": "5_hour",
+    "hp_budget_usd": 5.00,
     "hp_usage_cache_ttl": 60,
+    "show_drive": True,
     "drive_max_lines": 500,
+    "drive_source": "lines",
+    "drive_bar_width": 10,
+    "drive_include_untracked": True,
+    "level_per": 100,
+    "level_curve": "linear",
+    "level_max": 99,
+    "level_source": "lines",
     "keyblade_names": {
         "opus": "Ultima Weapon",
         "sonnet": "Oathkeeper",
@@ -23,12 +33,17 @@ DEFAULT_CONFIG = {
     },
     "show_munny": True,
     "show_world": True,
+    "show_branch": True,
+    "show_pr": True,
     "show_timer": True,
+    "world_fallback": "Traverse Town",
+    "world_map": {},
     "colors": {
         "hp": "green",
         "mp": "blue",
         "munny": "yellow",
         "keyblade": "cyan",
+        "drive": "magenta",
     },
 }
 
@@ -163,8 +178,27 @@ def get_plan_usage(config):
 
 
 def calculate_hp(data, config):
-    """Calculate HP from plan usage (5-hour window). Goes down as usage increases."""
-    five_hour, _ = get_plan_usage(config)
+    """Calculate HP from configured source. Goes down as usage increases.
+
+    Sources:
+      5_hour      — 5-hour plan usage window (Max/Pro)
+      7_day       — 7-day plan usage window (Max/Pro)
+      cost_budget — session cost vs hp_budget_usd (API key users)
+    """
+    source = config.get("hp_source", "5_hour")
+
+    if source == "cost_budget":
+        budget = config.get("hp_budget_usd", 5.00)
+        spent = data.get("cost", {}).get("total_cost_usd", 0) or 0
+        if budget <= 0:
+            return 100.0
+        return max(0.0, min(100.0, (budget - spent) / budget * 100))
+
+    # Plan usage sources (Max/Pro)
+    five_hour, seven_day = get_plan_usage(config)
+    if source == "7_day":
+        return max(0.0, min(100.0, 100.0 - seven_day))
+    # Default: 5_hour
     return max(0.0, min(100.0, 100.0 - five_hour))
 
 
@@ -173,32 +207,47 @@ def calculate_mp(data):
     return data.get("context_window", {}).get("remaining_percentage", 100) or 100
 
 
-def world_name(data):
-    """Convert workspace directory to world name with git branch and PR."""
+def world_name(data, config=None):
+    """Convert workspace directory to world name with git branch and PR.
+
+    Config options:
+      show_branch    — append :branch to world name
+      show_pr        — append (#PR) when a PR exists
+      world_fallback — name when no directory found
+      world_map      — map directory names to custom names
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    fallback = config.get("world_fallback", "Traverse Town")
     ws = data.get("workspace", {})
     current = ws.get("current_dir", "") or ws.get("project_dir", "")
     if not current:
-        return "Traverse Town"
-    name = os.path.basename(current)
-    if not name:
-        return "Traverse Town"
+        return fallback
+    dirname = os.path.basename(current)
+    if not dirname:
+        return fallback
+
+    # Apply world_map: custom name for this directory
+    wmap = config.get("world_map", {})
+    name = wmap.get(dirname, dirname)
 
     try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, cwd=current, timeout=3,
-        )
-        branch = r.stdout.strip() if r.returncode == 0 else ""
-        if branch:
-            name = f"{name}:{branch}"
-            # Try to get PR number (best-effort, short timeout)
+        if config.get("show_branch", True):
             r = subprocess.run(
-                ["gh", "pr", "view", "--json", "number", "-q", ".number"],
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True, text=True, cwd=current, timeout=3,
             )
-            pr_num = r.stdout.strip() if r.returncode == 0 else ""
-            if pr_num:
-                name = f"{name} (#{pr_num})"
+            branch = r.stdout.strip() if r.returncode == 0 else ""
+            if branch:
+                name = f"{name}:{branch}"
+                if config.get("show_pr", True):
+                    r = subprocess.run(
+                        ["gh", "pr", "view", "--json", "number", "-q", ".number"],
+                        capture_output=True, text=True, cwd=current, timeout=3,
+                    )
+                    pr_num = r.stdout.strip() if r.returncode == 0 else ""
+                    if pr_num:
+                        name = f"{name} (#{pr_num})"
     except (subprocess.SubprocessError, OSError):
         pass
 
@@ -217,35 +266,84 @@ def format_duration(ms):
     return f"{seconds}s"
 
 
-def calculate_level(data):
-    """Calculate level from total lines modified (added + removed). +1 every 100 lines."""
+def _level_value(data, config):
+    """Get the raw value used for level calculation based on level_source."""
+    source = config.get("level_source", "lines")
     cost = data.get("cost", {})
     added = cost.get("total_lines_added", 0) or 0
     removed = cost.get("total_lines_removed", 0) or 0
-    return (added + removed) // 100 + 1
-
-
-def calculate_exp(data):
-    """Calculate total lines modified (added + removed)."""
-    cost = data.get("cost", {})
-    added = cost.get("total_lines_added", 0) or 0
-    removed = cost.get("total_lines_removed", 0) or 0
+    if source == "added_only":
+        return added
+    if source == "commits":
+        return cost.get("total_commits", 0) or 0
+    if source == "files":
+        return cost.get("total_files_changed", 0) or 0
+    # Default: "lines" (added + removed)
     return added + removed
 
 
-def calculate_drive(data):
-    """Get uncommitted file and line counts from git."""
+def calculate_level(data, config=None):
+    """Calculate level from configured source and curve.
+
+    Sources: lines (added+removed), added_only, commits, files
+    Curves:  linear (every N), exponential (each level costs more)
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    per = config.get("level_per", 100)
+    curve = config.get("level_curve", "linear")
+    cap = config.get("level_max", 99)
+    value = _level_value(data, config)
+
+    if per <= 0:
+        per = 100
+
+    if curve == "exponential":
+        # Each level requires `per * level` more (triangular growth)
+        # Total for level L = per * (1 + 2 + ... + (L-1)) = per * L*(L-1)/2
+        # Solve: value = per * L*(L-1)/2 → L ≈ (1 + sqrt(1 + 8*value/per)) / 2
+        level = int((1 + math.sqrt(1 + 8 * value / per)) / 2)
+    else:
+        # Linear: every `per` units = +1 level
+        level = value // per + 1
+
+    return min(level, cap)
+
+
+def calculate_exp(data, config=None):
+    """Calculate EXP — same source as level (lines, added_only, commits, files)."""
+    if config is None:
+        config = DEFAULT_CONFIG
+    return _level_value(data, config)
+
+
+def calculate_drive(data, config=None):
+    """Get uncommitted file and line counts from git.
+
+    Config options:
+      drive_include_untracked — count untracked (new) files
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
     ws = data.get("workspace", {})
     work_dir = ws.get("current_dir", "") or ws.get("project_dir", "")
     if not work_dir:
         return 0, 0
     try:
-        # Count uncommitted files (modified, staged, untracked)
+        include_untracked = config.get("drive_include_untracked", True)
+
+        # Count uncommitted files
         r = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, cwd=work_dir, timeout=3,
         )
-        files = len([l for l in r.stdout.strip().split("\n") if l.strip()]) if r.returncode == 0 else 0
+        if r.returncode == 0 and r.stdout.strip():
+            status_lines = [l for l in r.stdout.strip().split("\n") if l.strip()]
+            if not include_untracked:
+                status_lines = [l for l in status_lines if not l.startswith("??")]
+            files = len(status_lines)
+        else:
+            files = 0
 
         # Count changed lines (staged + unstaged)
         lines = 0
@@ -330,7 +428,7 @@ def render_classic(data, config):
     parts = [f"  {kc}{KEYBLADE_ICON} {bld}{keyblade}{rst}"]
 
     if config.get("show_world", True):
-        world = world_name(data)
+        world = world_name(data, config)
         parts.append(f"{ANSI['dim']}{WORLD_ICON} {world}{rst}")
 
     if config.get("show_munny", True):
@@ -368,7 +466,7 @@ def render_minimal(data, config):
     parts = [f"{kc}{KEYBLADE_ICON} {keyblade}{rst}"]
 
     if config.get("show_world", True):
-        world = world_name(data)
+        world = world_name(data, config)
         parts.append(f"{dim}{WORLD_ICON} {world}{rst}")
 
     parts.append(f"{HEART_ICON} {hp_str}")
@@ -401,9 +499,9 @@ def render_full_rpg(data, config):
     bld = ANSI["bold"]
     dim = ANSI["dim"]
 
-    exp = calculate_exp(data)
-    level = calculate_level(data)
-    drive_files, drive_lines = calculate_drive(data)
+    exp = calculate_exp(data, config)
+    level = calculate_level(data, config)
+    drive_files, drive_lines = calculate_drive(data, config)
     duration_ms = cost_data.get("total_duration_ms", 0) or 0
 
     # Line 1: HP (plan usage) + MP (context)
@@ -415,7 +513,7 @@ def render_full_rpg(data, config):
     line1 = f"  {hp_bar}  {mp_bar}"
 
     # Line 2: Keyblade + Level + World
-    world = world_name(data)
+    world = world_name(data, config)
     line2_parts = [
         f"  {kc}{KEYBLADE_ICON} {bld}{keyblade}{rst}",
         f"{bld}Lv.{level}{rst}",
@@ -424,10 +522,21 @@ def render_full_rpg(data, config):
     line2 = "  ".join(line2_parts)
 
     # Line 3: Drive (uncommitted bar) + EXP + Munny + Timer + Party
-    drive_max = config.get("drive_max_lines", 500)
-    drive_pct = min(100.0, (drive_lines / drive_max * 100)) if drive_max > 0 else 0
-    drive_bar = render_bar(f"{DRIVE_ICON}Drive", drive_pct, 10, "magenta")
-    line3_parts = [f"  {drive_bar}"]
+    line3_parts = []
+    if config.get("show_drive", True):
+        drive_max = config.get("drive_max_lines", 500)
+        drive_src = config.get("drive_source", "lines")
+        if drive_src == "files":
+            drive_val = drive_files
+        elif drive_src == "both":
+            drive_val = drive_files + drive_lines
+        else:
+            drive_val = drive_lines
+        drive_pct = min(100.0, (drive_val / drive_max * 100)) if drive_max > 0 else 0
+        drive_color = colors.get("drive", "magenta")
+        drive_width = config.get("drive_bar_width", 10)
+        drive_bar = render_bar(f"{DRIVE_ICON}Drive", drive_pct, drive_width, drive_color)
+        line3_parts.append(f"  {drive_bar}")
     line3_parts.append(f"{EXP_ICON} {exp} EXP")
 
     if config.get("show_munny", True):

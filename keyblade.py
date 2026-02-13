@@ -4,14 +4,18 @@
 import json
 import math
 import os
+import subprocess
 import sys
+import tempfile
+import time
+import urllib.request
 
 # ─── Configuration ───────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
     "theme": "classic",
-    "mp_source": "cost_budget",
-    "mp_budget_usd": 5.00,
+    "hp_usage_cache_ttl": 60,
+    "drive_max_lines": 500,
     "keyblade_names": {
         "opus": "Ultima Weapon",
         "sonnet": "Oathkeeper",
@@ -92,6 +96,9 @@ def load_config():
 
 # ─── Data Helpers ────────────────────────────────────────────────
 
+USAGE_CACHE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_usage_cache.json")
+
+
 def resolve_keyblade(model_id, model_display, config):
     """Map model to KH keyblade name."""
     names = config.get("keyblade_names", DEFAULT_CONFIG["keyblade_names"])
@@ -105,33 +112,97 @@ def resolve_keyblade(model_id, model_display, config):
     return f"Waypoint ({model_display})" if model_display else "Kingdom Key"
 
 
-def calculate_mp(data, config):
-    """Calculate MP percentage based on configured source."""
-    source = config.get("mp_source", "cost_budget")
-    if source == "cost_budget":
-        budget = config.get("mp_budget_usd", 5.00)
-        spent = data.get("cost", {}).get("total_cost_usd", 0) or 0
-        if budget <= 0:
-            return 100.0
-        return max(0.0, min(100.0, (budget - spent) / budget * 100))
-    if source == "context_remaining":
-        return data.get("context_window", {}).get("remaining_percentage", 100) or 100
-    if source == "api_efficiency":
-        cost = data.get("cost", {})
-        total_ms = cost.get("total_duration_ms", 1) or 1
-        api_ms = cost.get("total_api_duration_ms", 0) or 0
-        return min(100.0, (api_ms / total_ms) * 100)
-    return 100.0
+def get_plan_usage(config):
+    """Fetch plan usage from Anthropic API with file-based caching."""
+    ttl = config.get("hp_usage_cache_ttl", 60)
+
+    # Check cache first
+    try:
+        with open(USAGE_CACHE_FILE) as f:
+            cache = json.load(f)
+        if time.time() - cache.get("ts", 0) < ttl:
+            return cache.get("five_hour", 0), cache.get("seven_day", 0)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        pass
+
+    # Extract OAuth token from macOS Keychain
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return 0, 0
+        creds = json.loads(r.stdout.strip())
+        token = creds.get("claudeAiOauth", {}).get("accessToken", "")
+        if not token:
+            return 0, 0
+
+        # Call usage API
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read())
+
+        five_hour = body.get("five_hour", {}).get("utilization", 0) or 0
+        seven_day = body.get("seven_day", {}).get("utilization", 0) or 0
+
+        # Write cache
+        with open(USAGE_CACHE_FILE, "w") as f:
+            json.dump({"ts": time.time(), "five_hour": five_hour, "seven_day": seven_day}, f)
+
+        return five_hour, seven_day
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError,
+            KeyError, ValueError, urllib.error.URLError):
+        return 0, 0
+
+
+def calculate_hp(data, config):
+    """Calculate HP from plan usage (5-hour window). Goes down as usage increases."""
+    five_hour, _ = get_plan_usage(config)
+    return max(0.0, min(100.0, 100.0 - five_hour))
+
+
+def calculate_mp(data):
+    """Calculate MP from context window remaining percentage."""
+    return data.get("context_window", {}).get("remaining_percentage", 100) or 100
 
 
 def world_name(data):
-    """Convert workspace directory to a KH 'world' name."""
+    """Convert workspace directory to world name with git branch and PR."""
     ws = data.get("workspace", {})
     current = ws.get("current_dir", "") or ws.get("project_dir", "")
     if not current:
         return "Traverse Town"
     name = os.path.basename(current)
-    return name if name else "Traverse Town"
+    if not name:
+        return "Traverse Town"
+
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=current, timeout=3,
+        )
+        branch = r.stdout.strip() if r.returncode == 0 else ""
+        if branch:
+            name = f"{name}:{branch}"
+            # Try to get PR number (best-effort, short timeout)
+            r = subprocess.run(
+                ["gh", "pr", "view", "--json", "number", "-q", ".number"],
+                capture_output=True, text=True, cwd=current, timeout=3,
+            )
+            pr_num = r.stdout.strip() if r.returncode == 0 else ""
+            if pr_num:
+                name = f"{name} (#{pr_num})"
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return name
 
 
 def format_duration(ms):
@@ -147,9 +218,53 @@ def format_duration(ms):
 
 
 def calculate_level(data):
-    """Calculate level from lines added (EXP)."""
-    lines = data.get("cost", {}).get("total_lines_added", 0) or 0
-    return int(math.sqrt(max(0, lines) / 10)) + 1
+    """Calculate level from total lines modified (added + removed). +1 every 100 lines."""
+    cost = data.get("cost", {})
+    added = cost.get("total_lines_added", 0) or 0
+    removed = cost.get("total_lines_removed", 0) or 0
+    return (added + removed) // 100 + 1
+
+
+def calculate_exp(data):
+    """Calculate total lines modified (added + removed)."""
+    cost = data.get("cost", {})
+    added = cost.get("total_lines_added", 0) or 0
+    removed = cost.get("total_lines_removed", 0) or 0
+    return added + removed
+
+
+def calculate_drive(data):
+    """Get uncommitted file and line counts from git."""
+    ws = data.get("workspace", {})
+    work_dir = ws.get("current_dir", "") or ws.get("project_dir", "")
+    if not work_dir:
+        return 0, 0
+    try:
+        # Count uncommitted files (modified, staged, untracked)
+        r = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, cwd=work_dir, timeout=3,
+        )
+        files = len([l for l in r.stdout.strip().split("\n") if l.strip()]) if r.returncode == 0 else 0
+
+        # Count changed lines (staged + unstaged)
+        lines = 0
+        for args in [["git", "diff", "--numstat"], ["git", "diff", "--cached", "--numstat"]]:
+            r = subprocess.run(args, capture_output=True, text=True, cwd=work_dir, timeout=3)
+            for line in r.stdout.strip().split("\n"):
+                if not line.strip():
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    try:
+                        a = int(parts[0]) if parts[0] != "-" else 0
+                        d = int(parts[1]) if parts[1] != "-" else 0
+                        lines += a + d
+                    except ValueError:
+                        pass
+        return files, lines
+    except (subprocess.SubprocessError, OSError):
+        return 0, 0
 
 
 def hp_color(pct):
@@ -184,9 +299,8 @@ def render_bar(label, percentage, width, color, show_pct=True):
 
 def render_classic(data, config):
     """Classic Kingdom Hearts HUD — HP bar, MP bar, keyblade, munny."""
-    ctx = data.get("context_window", {})
-    hp_pct = ctx.get("remaining_percentage", 100) or 100
-    mp_pct = calculate_mp(data, config)
+    hp_pct = calculate_hp(data, config)
+    mp_pct = calculate_mp(data)
 
     model = data.get("model", {})
     keyblade = resolve_keyblade(
@@ -200,13 +314,11 @@ def render_classic(data, config):
     rst = ANSI["reset"]
     bld = ANSI["bold"]
 
-    # Line 1: HP + MP bars
-    hp_c = hp_color(hp_pct)
-    hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, "green")
-    # Override bar color based on HP level
+    # Line 1: HP (plan usage) + MP (context) bars
+    color_name = "green"
     if hp_pct <= 50:
         color_name = "yellow" if hp_pct > 20 else "red"
-        hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
+    hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
 
     mp_bar = render_bar("MP", mp_pct, 12, colors.get("mp", "blue"))
     line1 = f"  {hp_bar}  {mp_bar}"
@@ -233,8 +345,7 @@ def render_classic(data, config):
 
 def render_minimal(data, config):
     """Minimal KH — single line, subtle references."""
-    ctx = data.get("context_window", {})
-    hp_pct = ctx.get("remaining_percentage", 100) or 100
+    hp_pct = calculate_hp(data, config)
 
     model = data.get("model", {})
     keyblade = resolve_keyblade(
@@ -272,9 +383,8 @@ def render_minimal(data, config):
 
 def render_full_rpg(data, config):
     """Full RPG HUD — HP/MP, keyblade, world, munny, timer, EXP, drive, level."""
-    ctx = data.get("context_window", {})
-    hp_pct = ctx.get("remaining_percentage", 100) or 100
-    mp_pct = calculate_mp(data, config)
+    hp_pct = calculate_hp(data, config)
+    mp_pct = calculate_mp(data)
     cost_data = data.get("cost", {})
     cost = cost_data.get("total_cost_usd", 0) or 0
     munny = int(cost * 100)
@@ -291,13 +401,12 @@ def render_full_rpg(data, config):
     bld = ANSI["bold"]
     dim = ANSI["dim"]
 
-    lines_added = cost_data.get("total_lines_added", 0) or 0
-    lines_removed = cost_data.get("total_lines_removed", 0) or 0
+    exp = calculate_exp(data)
     level = calculate_level(data)
-    drive_pct = ctx.get("used_percentage", 0) or 0
+    drive_files, drive_lines = calculate_drive(data)
     duration_ms = cost_data.get("total_duration_ms", 0) or 0
 
-    # Line 1: HP + MP
+    # Line 1: HP (plan usage) + MP (context)
     color_name = "green"
     if hp_pct <= 50:
         color_name = "yellow" if hp_pct > 20 else "red"
@@ -314,10 +423,12 @@ def render_full_rpg(data, config):
     ]
     line2 = "  ".join(line2_parts)
 
-    # Line 3: Drive Gauge + EXP + Munny + Timer + Party
+    # Line 3: Drive (uncommitted bar) + EXP + Munny + Timer + Party
+    drive_max = config.get("drive_max_lines", 500)
+    drive_pct = min(100.0, (drive_lines / drive_max * 100)) if drive_max > 0 else 0
     drive_bar = render_bar(f"{DRIVE_ICON}Drive", drive_pct, 10, "magenta")
     line3_parts = [f"  {drive_bar}"]
-    line3_parts.append(f"{EXP_ICON} +{lines_added}/-{lines_removed}")
+    line3_parts.append(f"{EXP_ICON} {exp} EXP")
 
     if config.get("show_munny", True):
         line3_parts.append(f"{mc}{MUNNY_ICON}{munny} munny{rst}")

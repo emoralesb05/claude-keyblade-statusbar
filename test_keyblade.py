@@ -79,40 +79,21 @@ class TestKeybladeResolution(unittest.TestCase):
 
 
 class TestCalculateMP(unittest.TestCase):
-    def test_cost_budget_default(self):
+    def test_context_remaining(self):
         data = make_data()
-        config = dict(keyblade.DEFAULT_CONFIG)
-        mp = keyblade.calculate_mp(data, config)
-        # $1.50 spent of $5.00 budget = 70% remaining
-        self.assertAlmostEqual(mp, 70.0)
-
-    def test_cost_budget_zero_budget(self):
-        config = dict(keyblade.DEFAULT_CONFIG)
-        config["mp_budget_usd"] = 0
-        mp = keyblade.calculate_mp(make_data(), config)
-        self.assertEqual(mp, 100.0)
-
-    def test_cost_budget_overspent(self):
-        data = make_data()
-        data["cost"]["total_cost_usd"] = 10.0
-        config = dict(keyblade.DEFAULT_CONFIG)
-        mp = keyblade.calculate_mp(data, config)
-        self.assertEqual(mp, 0.0)
-
-    def test_context_remaining_source(self):
-        config = dict(keyblade.DEFAULT_CONFIG)
-        config["mp_source"] = "context_remaining"
-        data = make_data()
-        mp = keyblade.calculate_mp(data, config)
+        mp = keyblade.calculate_mp(data)
+        # remaining_percentage is 75 in test data
         self.assertEqual(mp, 75)
 
-    def test_api_efficiency_source(self):
-        config = dict(keyblade.DEFAULT_CONFIG)
-        config["mp_source"] = "api_efficiency"
+    def test_missing_context(self):
+        mp = keyblade.calculate_mp({})
+        self.assertEqual(mp, 100)
+
+    def test_null_remaining(self):
         data = make_data()
-        mp = keyblade.calculate_mp(data, config)
-        # 120000 / 180000 * 100 = 66.67
-        self.assertAlmostEqual(mp, 66.67, places=1)
+        data["context_window"]["remaining_percentage"] = None
+        mp = keyblade.calculate_mp(data)
+        self.assertEqual(mp, 100)
 
 
 class TestWorldName(unittest.TestCase):
@@ -144,23 +125,55 @@ class TestCalculateLevel(unittest.TestCase):
     def test_zero_lines(self):
         data = make_data()
         data["cost"]["total_lines_added"] = 0
+        data["cost"]["total_lines_removed"] = 0
         self.assertEqual(keyblade.calculate_level(data), 1)
 
-    def test_ten_lines(self):
+    def test_under_100(self):
         data = make_data()
-        data["cost"]["total_lines_added"] = 10
+        data["cost"]["total_lines_added"] = 50
+        data["cost"]["total_lines_removed"] = 20
+        # 70 total modified, still level 1
+        self.assertEqual(keyblade.calculate_level(data), 1)
+
+    def test_exactly_100(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 60
+        data["cost"]["total_lines_removed"] = 40
+        # 100 total modified = level 2
         self.assertEqual(keyblade.calculate_level(data), 2)
 
-    def test_200_lines(self):
+    def test_250_lines(self):
         data = make_data()
         data["cost"]["total_lines_added"] = 200
-        level = keyblade.calculate_level(data)
-        self.assertEqual(level, 5)
+        data["cost"]["total_lines_removed"] = 50
+        # 250 total = level 3
+        self.assertEqual(keyblade.calculate_level(data), 3)
 
     def test_1000_lines(self):
         data = make_data()
-        data["cost"]["total_lines_added"] = 1000
+        data["cost"]["total_lines_added"] = 700
+        data["cost"]["total_lines_removed"] = 300
+        # 1000 total = level 11
         self.assertEqual(keyblade.calculate_level(data), 11)
+
+
+class TestCalculateExp(unittest.TestCase):
+    def test_default_data(self):
+        data = make_data()
+        # 200 added + 30 removed = 230
+        self.assertEqual(keyblade.calculate_exp(data), 230)
+
+    def test_zero(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = 0
+        data["cost"]["total_lines_removed"] = 0
+        self.assertEqual(keyblade.calculate_exp(data), 0)
+
+    def test_null_fields(self):
+        data = make_data()
+        data["cost"]["total_lines_added"] = None
+        data["cost"]["total_lines_removed"] = None
+        self.assertEqual(keyblade.calculate_exp(data), 0)
 
 
 class TestBarRendering(unittest.TestCase):
@@ -271,7 +284,7 @@ class TestFullRPGTheme(unittest.TestCase):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
         output = keyblade.render_full_rpg(data, config)
-        self.assertIn("+200/-30", output)
+        self.assertIn("230 EXP", output)
 
     def test_agent_party_member(self):
         data = make_data(agent={"name": "security-reviewer"})
@@ -314,7 +327,7 @@ class TestConfigLoading(unittest.TestCase):
         os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
         config = keyblade.load_config()
         self.assertEqual(config["theme"], "classic")
-        self.assertEqual(config["mp_budget_usd"], 5.00)
+        self.assertEqual(config["hp_usage_cache_ttl"], 60)
         del os.environ["CLAUDE_CONFIG_DIR"]
 
 

@@ -11,74 +11,54 @@ When the user invokes /keyblade-statusbar-config, read the current config from `
 ## Steps
 
 1. Read the current config file at `~/.claude/hooks/keyblade/config.json`
-2. Present the current settings in a clear format (shown below)
-3. Ask what they want to change
+2. Present an INTERACTIVE category selection using AskUserQuestion
+3. After category is selected, show that category's current values and options using AskUserQuestion
 4. Apply the change by editing the JSON file
-5. Confirm the change
+5. Confirm the change with KH flavor
 
-## Display Format
+## Menu Format
 
-Show the current config like this:
+Present settings as INTERACTIVE selections using the AskUserQuestion tool.
 
-```
- +===============================+
- |    KEYBLADE CONFIG            |
- +===============================+
- |                               |
- |  THEME: classic               |
- |    > classic                  |
- |      minimal                  |
- |      full_rpg                 |
- |                               |
- |  HP SOURCE: 5_hour            |
- |    > 5_hour                   |
- |      7_day                    |
- |      cost_budget              |
- |  HP BUDGET: $5.00             |
- |  HP CACHE TTL: 60s            |
- |                               |
- |  KEYBLADE NAMES:              |
- |    Opus   → Ultima Weapon     |
- |    Sonnet → Oathkeeper        |
- |    Haiku  → Kingdom Key       |
- |                               |
- |  LEVEL:                       |
- |    level_per: 100             |
- |    level_curve: linear        |
- |    level_max: 99              |
- |    level_source: lines        |
- |                               |
- |  DRIVE:                       |
- |    show_drive: true           |
- |    drive_source: lines        |
- |    drive_max_lines: 500       |
- |    drive_bar_width: 10        |
- |    drive_include_untracked:   |
- |      true                     |
- |                               |
- |  WORLD:                       |
- |    show_world: true           |
- |    show_branch: true          |
- |    show_pr: true              |
- |    world_fallback:            |
- |      Traverse Town            |
- |    world_map: {}              |
- |                               |
- |  DISPLAY:                     |
- |    show_munny: true           |
- |    show_timer: true           |
- |                               |
- |  COLORS:                      |
- |    hp: green                  |
- |    mp: blue                   |
- |    munny: yellow              |
- |    keyblade: cyan             |
- |    drive: magenta             |
- |                               |
- +===============================+
-```
+### Step 1: Category Selection
 
-Then ask: **What would you like to change?**
+Use AskUserQuestion with:
+- header: "Config"
+- question: "KEYBLADE CONFIG — What do you want to change?"
+- options: One per category, with current values previewed in the description
+  - label: "Theme" / description: "Currently: full_rpg (classic, minimal, full_rpg)"
+  - label: "HP" / description: "Currently: 5_hour, budget $5.00, cache 60s"
+  - label: "Keyblade Names" / description: "Opus → Ultima Weapon, Sonnet → Oathkeeper, Haiku → Kingdom Key"
+  - label: "Level & EXP" / description: "per: 100, curve: linear, max: 99, source: lines"
+
+Use UP TO 4 options per question. If there are more than 4 categories, use two questions. Good groupings:
+- Question 1: Theme, HP, Level & EXP, Drive
+- Question 2: World, Keyblade Names, Colors, Display (munny/timer)
+
+### Step 2: Setting Selection
+
+After a category is picked, show the specific settings within it using AskUserQuestion:
+- header: The category name (e.g. "Theme")
+- question: Show current value, ask what to change
+- options: The available values or settings
+
+Examples:
+
+**Theme selected:**
+- header: "Theme"
+- question: "Current theme: full_rpg — Select new theme"
+- options: classic, minimal, full_rpg
+
+**Level selected:**
+- header: "Level"
+- question: "level_per: 100, curve: linear, max: 99, source: lines — What to change?"
+- options: "level_per", "level_curve", "level_source", "level_max"
+
+Then for the specific setting, show its options.
+
+### Step 3: Apply & Confirm
+
+After selection, apply the change and confirm with KH flavor.
 
 ## Available Settings Reference
 

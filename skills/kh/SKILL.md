@@ -164,4 +164,19 @@ Before presenting the menu, silently analyze (run these in parallel where possib
 - Grep for `TODO|FIXME|HACK` in recently changed files (`git diff --name-only HEAD~5` then grep those files)
 - Check available skills in the session (from system-reminder tags)
 
+### npm Scripts Discovery
+
+If a `package.json` exists in the project root, read its `scripts` section and use those to populate Attack and Magic:
+- **Attack**: Map common scripts to attack abilities:
+  - `test` / `test:*` → "Strike Raid — npm test"
+  - `build` → "Sonic Blade — npm run build"
+  - `lint` / `eslint` → "Sliding Dash — npm run lint"
+  - `format` / `prettier` → "Zantetsuken — npm run format"
+  - `start` / `dev` → "Ars Arcanum — npm run dev"
+  - `typecheck` / `tsc` → "Ripple Drive — npm run typecheck"
+  - `deploy` → "Ragnarok — npm run deploy"
+- **Magic**: If there are less common or project-specific scripts (e.g. `migrate`, `seed`, `codegen`, `storybook`), surface them as spell options when relevant.
+
+Always prefer the project's actual scripts over guessing generic commands.
+
 Use this context to populate the menu with RELEVANT, SPECIFIC options only. The more specific each option is, the more useful the menu becomes.

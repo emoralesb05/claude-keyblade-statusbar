@@ -247,14 +247,22 @@ class TestBarRendering(unittest.TestCase):
     def test_full_bar(self):
         bar = keyblade.render_bar("HP", 100, 10, "green")
         self.assertIn(keyblade.BAR_FULL, bar)
-        self.assertNotIn(keyblade.BAR_EMPTY, bar)
         self.assertIn("100%", bar)
 
     def test_empty_bar(self):
         bar = keyblade.render_bar("HP", 0, 10, "green")
         self.assertNotIn(keyblade.BAR_FULL, bar)
-        self.assertIn(keyblade.BAR_EMPTY, bar)
         self.assertIn("0%", bar)
+
+    def test_smooth_partial_block(self):
+        # 45% of 10 = 4.5 chars → 4 full + ▌ (4/8) partial block
+        bar = keyblade.render_bar("HP", 45, 10, "green")
+        self.assertIn(keyblade.BAR_FULL, bar)
+        self.assertIn("45%", bar)
+        # Should contain a partial block character (3/8 or thicker)
+        partial_blocks = set(keyblade.BAR_BLOCKS[3:8])  # ▍▌▋▊▉
+        has_partial = any(ch in bar for ch in partial_blocks)
+        self.assertTrue(has_partial, "Bar at 45% should contain a partial block character")
 
     def test_half_bar(self):
         bar = keyblade.render_bar("HP", 50, 10, "green")

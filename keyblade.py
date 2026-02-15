@@ -100,8 +100,10 @@ if not _should_use_color():
 
 # ─── Unicode Constants ───────────────────────────────────────────
 
-BAR_FULL = "\u2588"   # Full block
-BAR_EMPTY = "\u2591"  # Light shade
+BAR_FULL = "\u2588"    # █ Full block
+BAR_EMPTY = "\u2591"   # ░ Light shade (visible empty track)
+BAR_BLOCKS = [" ", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "\u2589", "\u2588"]
+#              0/8    1/8       2/8       3/8       4/8       5/8       6/8       7/8       8/8
 
 KEYBLADE_ICON = "\U0001f5dd"  # 🗝 Old key — keyblades are keys, not swords
 MUNNY_ICON = "\u25c9"         # ◉ Fisheye — munny orbs are round jewels
@@ -502,17 +504,25 @@ def resolve_drive_form_color_name(data, config=None):
 # ─── Bar Rendering ───────────────────────────────────────────────
 
 def render_bar(label, percentage, width, color, show_pct=True):
-    """Render an HP/MP-style bar using Unicode block characters."""
+    """Render an HP/MP-style bar using smooth Unicode block characters."""
     c = ANSI.get(color, ANSI["green"])
     dim = ANSI["dim"]
     rst = ANSI["reset"]
     bld = ANSI["bold"]
 
     pct = max(0.0, min(100.0, percentage))
-    filled = int(pct / 100.0 * width)
-    empty = width - filled
+    value = pct / 100.0 * width
+    full = int(value)
+    partial_idx = round((value - full) * 8)
+    if partial_idx == 8:
+        full += 1
+        partial_idx = 0
 
-    bar = c + bld + (BAR_FULL * filled) + dim + (BAR_EMPTY * empty) + rst
+    # Build smooth bar — skip partials thinner than 3/8 (visually indistinct from empty)
+    partial = BAR_BLOCKS[partial_idx] if partial_idx >= 3 and full < width else ""
+    empty = width - full - (1 if partial else 0)
+
+    bar = c + bld + (BAR_FULL * full) + partial + dim + (BAR_EMPTY * max(0, empty)) + rst
 
     pct_str = f" {pct:.0f}%" if show_pct else ""
     return f"{bld}{c}{label}{rst} [{bar}]{c}{pct_str}{rst}"

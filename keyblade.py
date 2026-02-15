@@ -78,14 +78,14 @@ ANSI = {
 BAR_FULL = "\u2588"   # Full block
 BAR_EMPTY = "\u2591"  # Light shade
 
-KEYBLADE_ICON = "\u2694"  # Crossed swords
-MUNNY_ICON = "\u2b50"     # Star (munny orbs)
-HEART_ICON = "\u2665"     # Heart
-WORLD_ICON = "\u2299"     # Circled dot (world)
-TIMER_ICON = "\u231a"     # Watch
-DRIVE_ICON = "\u26a1"     # Lightning (drive form)
-EXP_ICON = "\u2605"       # Black star
-PARTY_ICON = "\u263a"     # Smiley (party member)
+KEYBLADE_ICON = "\U0001f5dd"  # 🗝 Old key — keyblades are keys, not swords
+MUNNY_ICON = "\u25c9"         # ◉ Fisheye — munny orbs are round jewels
+HEART_ICON = "\u2665"         # ♥ Heart — hearts are core KH
+WORLD_ICON = "\u2726"         # ✦ Four-pointed star — worlds glow on the world map
+TIMER_ICON = "\u23f1"         # ⏱ Stopwatch — session/journey timer
+DRIVE_ICON = "\u25c6"         # ◆ Diamond — the in-game Drive gauge shape
+EXP_ICON = "\u265b"           # ♛ Crown — Sora's crown necklace
+PARTY_ICON = "\u2666"         # ♦ Diamond suit — party member indicator
 
 
 # ─── Config Loading ──────────────────────────────────────────────
@@ -130,7 +130,7 @@ def resolve_keyblade(model_id, model_display, config):
         return names.get("sonnet", "Oathkeeper")
     if "haiku" in model_lower:
         return names.get("haiku", "Kingdom Key")
-    return f"Waypoint ({model_display})" if model_display else "Kingdom Key"
+    return "Starlight"
 
 
 def get_plan_usage(config):
@@ -263,7 +263,7 @@ def world_name(data, config=None):
             )
             branch = r.stdout.strip() if r.returncode == 0 else ""
             if branch:
-                name = f"{name}:{branch}"
+                name = f"{name} \u2219 {branch}"
     except (subprocess.SubprocessError, OSError):
         pass
 
@@ -505,18 +505,18 @@ def render_classic(data, config):
 
     dc = ANSI.get(colors.get("drive", "magenta"), ANSI["magenta"])
 
-    parts = [f"  {kc}{KEYBLADE_ICON} {bld}{keyblade}{rst}"]
+    parts = [f"  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
 
     if config.get("show_drive_form", True):
         form = resolve_drive_form(data, config)
-        parts.append(f"{dc}{DRIVE_ICON}{form}{rst}")
+        parts.append(f"{dc}{DRIVE_ICON} {form}{rst}")
 
     if config.get("show_world", True):
         world = world_name(data, config)
         parts.append(f"{ANSI['dim']}{WORLD_ICON} {world}{rst}")
 
     if config.get("show_munny", True):
-        parts.append(f"{mc}{MUNNY_ICON} {munny} munny{rst}")
+        parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
 
     line2 = "  ".join(parts)
 
@@ -549,13 +549,13 @@ def render_minimal(data, config):
 
     dc = ANSI.get(colors.get("drive", "magenta"), ANSI["magenta"])
 
-    parts = [f"{kc}{KEYBLADE_ICON} {keyblade}{rst}"]
+    parts = [f"{kc}{KEYBLADE_ICON}  {keyblade}{rst}"]
 
     if config.get("show_drive_form", True):
         form = resolve_drive_form(data, config)
         # Strip " Form" suffix for compact display
         short_form = form.replace(" Form", "")
-        parts.append(f"{dc}{DRIVE_ICON}{short_form}{rst}")
+        parts.append(f"{dc}{DRIVE_ICON} {short_form}{rst}")
 
     if config.get("show_world", True):
         world = world_name(data, config)
@@ -564,7 +564,7 @@ def render_minimal(data, config):
     parts.append(f"{HEART_ICON} {hp_str}")
 
     if config.get("show_munny", True):
-        parts.append(f"{mc}{MUNNY_ICON}{munny}{rst}")
+        parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
 
     return "  ".join(parts)
 
@@ -607,8 +607,8 @@ def render_full_rpg(data, config):
     # Line 2: Keyblade + Level + World
     world = world_name(data, config)
     line2_parts = [
-        f"  {kc}{KEYBLADE_ICON} {bld}{keyblade}{rst}",
-        f"{bld}Lv.{level}{rst}",
+        f"  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}",
+        f"{bld}LV {level}{rst}",
         f"{dim}{WORLD_ICON} {world}{rst}",
     ]
     line2 = "  ".join(line2_parts)
@@ -628,12 +628,12 @@ def render_full_rpg(data, config):
         drive_color = colors.get("drive", "magenta")
         drive_width = config.get("drive_bar_width", 10)
         form_name = resolve_drive_form(data, config) if config.get("show_drive_form", True) else "Drive"
-        drive_bar = render_bar(f"{DRIVE_ICON}{form_name}", drive_pct, drive_width, drive_color)
+        drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color)
         line3_parts.append(f"  {drive_bar}")
     line3_parts.append(f"{EXP_ICON} {exp} EXP")
 
     if config.get("show_munny", True):
-        line3_parts.append(f"{mc}{MUNNY_ICON}{munny} munny{rst}")
+        line3_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
 
     if config.get("show_timer", True):
         journey = format_duration(duration_ms)
@@ -657,7 +657,7 @@ RENDERERS = {
     "full_rpg": render_full_rpg,
 }
 
-FALLBACK = f"{ANSI['cyan']}{KEYBLADE_ICON} Keyblade{ANSI['reset']}"
+FALLBACK = f"{ANSI['cyan']}{KEYBLADE_ICON}  Keyblade{ANSI['reset']}"
 
 
 def main():

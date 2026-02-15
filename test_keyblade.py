@@ -64,12 +64,12 @@ class TestKeybladeResolution(unittest.TestCase):
     def test_unknown_model(self):
         config = keyblade.DEFAULT_CONFIG
         result = keyblade.resolve_keyblade("gpt-4o", "GPT-4o", config)
-        self.assertEqual(result, "Waypoint (GPT-4o)")
+        self.assertEqual(result, "Starlight")
 
     def test_unknown_empty_display(self):
         config = keyblade.DEFAULT_CONFIG
         result = keyblade.resolve_keyblade("unknown", "", config)
-        self.assertEqual(result, "Kingdom Key")
+        self.assertEqual(result, "Starlight")
 
     def test_custom_names(self):
         config = dict(keyblade.DEFAULT_CONFIG)
@@ -302,7 +302,7 @@ class TestClassicTheme(unittest.TestCase):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
         output = keyblade.render_classic(data, config)
-        self.assertIn("munny", output)
+        self.assertIn(keyblade.MUNNY_ICON, output)
 
     def test_contains_hp_mp(self):
         data = make_data()
@@ -339,7 +339,7 @@ class TestFullRPGTheme(unittest.TestCase):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
         output = keyblade.render_full_rpg(data, config)
-        self.assertIn("Lv.", output)
+        self.assertIn("LV ", output)
 
     def test_contains_drive_form(self):
         data = make_data()

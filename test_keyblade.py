@@ -538,5 +538,143 @@ class TestDriveFormInThemes(unittest.TestCase):
         self.assertNotIn("Valor", output)
 
 
+class TestResolveEffortLevel(unittest.TestCase):
+    def setUp(self):
+        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
+
+    def tearDown(self):
+        if self.orig_env is not None:
+            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
+        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
+            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
+        if self.orig_config_dir is not None:
+            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
+        elif "CLAUDE_CONFIG_DIR" in os.environ:
+            del os.environ["CLAUDE_CONFIG_DIR"]
+
+    def test_default_is_high(self):
+        data = make_data()
+        self.assertEqual(keyblade.resolve_effort_level(data), "high")
+
+    def test_from_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
+        data = make_data()
+        self.assertEqual(keyblade.resolve_effort_level(data), "low")
+
+    def test_data_overrides_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "high"
+        data = make_data()
+        data["effort"] = "max"
+        self.assertEqual(keyblade.resolve_effort_level(data), "max")
+
+
+class TestDriveFormColorName(unittest.TestCase):
+    def setUp(self):
+        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
+
+    def tearDown(self):
+        if self.orig_env is not None:
+            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
+        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
+            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
+        if self.orig_config_dir is not None:
+            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
+        elif "CLAUDE_CONFIG_DIR" in os.environ:
+            del os.environ["CLAUDE_CONFIG_DIR"]
+
+    def test_low_is_red(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
+        data = make_data()
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "red")
+
+    def test_medium_is_blue(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "medium"
+        data = make_data()
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "blue")
+
+    def test_high_is_yellow(self):
+        data = make_data()
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "yellow")
+
+    def test_max_is_bright_white(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+        data = make_data()
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "bright_white")
+
+    def test_custom_form_colors(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["drive_form_colors"] = {"low": "cyan", "high": "magenta"}
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data, config), "cyan")
+
+
+class TestHPDangerMarker(unittest.TestCase):
+    def test_healthy_no_marker(self):
+        self.assertEqual(keyblade.hp_danger_marker(75), "")
+
+    def test_warning_marker(self):
+        marker = keyblade.hp_danger_marker(35)
+        self.assertIn("\u26a0", marker)
+
+    def test_danger_marker(self):
+        marker = keyblade.hp_danger_marker(10)
+        self.assertIn("DANGER", marker)
+
+    def test_boundary_50_shows_warning(self):
+        marker = keyblade.hp_danger_marker(50)
+        self.assertIn("\u26a0", marker)
+
+    def test_boundary_20_shows_warning(self):
+        marker = keyblade.hp_danger_marker(20)
+        self.assertIn("\u26a0", marker)
+
+    def test_boundary_19_shows_danger(self):
+        marker = keyblade.hp_danger_marker(19)
+        self.assertIn("DANGER", marker)
+
+
+class TestNoColor(unittest.TestCase):
+    def test_should_use_color_no_color_set(self):
+        orig = os.environ.get("NO_COLOR")
+        os.environ["NO_COLOR"] = "1"
+        self.assertFalse(keyblade._should_use_color())
+        if orig is not None:
+            os.environ["NO_COLOR"] = orig
+        else:
+            del os.environ["NO_COLOR"]
+
+    def test_should_use_color_default_true(self):
+        orig_nc = os.environ.get("NO_COLOR")
+        orig_cl = os.environ.get("CLICOLOR")
+        if "NO_COLOR" in os.environ:
+            del os.environ["NO_COLOR"]
+        if "CLICOLOR" in os.environ:
+            del os.environ["CLICOLOR"]
+        self.assertTrue(keyblade._should_use_color())
+        if orig_nc is not None:
+            os.environ["NO_COLOR"] = orig_nc
+        if orig_cl is not None:
+            os.environ["CLICOLOR"] = orig_cl
+
+    def test_should_use_color_clicolor_zero(self):
+        orig_nc = os.environ.get("NO_COLOR")
+        orig_cl = os.environ.get("CLICOLOR")
+        if "NO_COLOR" in os.environ:
+            del os.environ["NO_COLOR"]
+        os.environ["CLICOLOR"] = "0"
+        self.assertFalse(keyblade._should_use_color())
+        if orig_nc is not None:
+            os.environ["NO_COLOR"] = orig_nc
+        if orig_cl is not None:
+            os.environ["CLICOLOR"] = orig_cl
+        else:
+            del os.environ["CLICOLOR"]
+
+
 if __name__ == "__main__":
     unittest.main()

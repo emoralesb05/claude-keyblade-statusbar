@@ -28,6 +28,12 @@
     "high": "Master Form",
     "max": "Final Form"
   },
+  "drive_form_colors": {
+    "low": "red",
+    "medium": "blue",
+    "high": "yellow",
+    "max": "bright_white"
+  },
   "world_fallback": "Traverse Town",
   "world_map": {},
   "colors": {

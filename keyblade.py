@@ -42,6 +42,12 @@ DEFAULT_CONFIG = {
         "high": "Master Form",
         "max": "Final Form",
     },
+    "drive_form_colors": {
+        "low": "red",
+        "medium": "blue",
+        "high": "yellow",
+        "max": "bright_white",
+    },
     "world_fallback": "Traverse Town",
     "world_map": {},
     "colors": {
@@ -71,7 +77,26 @@ ANSI = {
     "bright_cyan": "\033[96m",
     "bright_yellow": "\033[93m",
     "bright_white": "\033[97m",
+    "bright_orange": "\033[38;5;208m",
 }
+
+
+def _should_use_color():
+    """Check NO_COLOR and CLICOLOR status.
+
+    Default to color ON since Claude Code captures stdout via pipe
+    (isatty would be False) but renders the output in a terminal.
+    Only suppress color when explicitly requested.
+    """
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("CLICOLOR") == "0":
+        return False
+    return True
+
+
+if not _should_use_color():
+    ANSI = {k: "" for k in ANSI}
 
 # ─── Unicode Constants ───────────────────────────────────────────
 
@@ -104,7 +129,7 @@ def load_config():
             user_config = json.load(f)
         config.update(user_config)
         # Deep merge nested dicts
-        for key in ("colors", "keyblade_names", "drive_form_names"):
+        for key in ("colors", "keyblade_names", "drive_form_names", "drive_form_colors"):
             if key in DEFAULT_CONFIG and key in user_config:
                 merged = dict(DEFAULT_CONFIG[key])
                 merged.update(user_config[key])
@@ -411,19 +436,24 @@ def hp_color(pct):
     return ANSI["red"]
 
 
-def resolve_drive_form(data, config=None):
-    """Resolve current Drive Form name from reasoning effort level.
+def hp_danger_marker(pct):
+    """Return KH-style danger marker for HP percentage."""
+    if pct < 20:
+        return f" {ANSI['red']}{ANSI['bold']}\u300cDANGER\u300d{ANSI['reset']}"
+    if pct <= 50:
+        return f" {ANSI['yellow']}\u26a0{ANSI['reset']}"
+    return ""
+
+
+def resolve_effort_level(data, config=None):
+    """Resolve raw effort level string.
 
     Priority:
       1. Statusbar JSON 'effort' or 'reasoning_effort' (future-proof)
       2. ~/.claude/settings.json 'effortLevel'
       3. CLAUDE_CODE_EFFORT_LEVEL env var
-      4. Default: 'high' (Master Form)
+      4. Default: 'high'
     """
-    if config is None:
-        config = DEFAULT_CONFIG
-    names = config.get("drive_form_names", DEFAULT_CONFIG["drive_form_names"])
-
     # 1. Check statusbar data (future-proof)
     effort = data.get("effort") or data.get("reasoning_effort")
 
@@ -448,8 +478,25 @@ def resolve_drive_form(data, config=None):
     if not effort:
         effort = "high"
 
-    effort = effort.lower()
+    return effort.lower()
+
+
+def resolve_drive_form(data, config=None):
+    """Resolve current Drive Form name from reasoning effort level."""
+    if config is None:
+        config = DEFAULT_CONFIG
+    names = config.get("drive_form_names", DEFAULT_CONFIG["drive_form_names"])
+    effort = resolve_effort_level(data, config)
     return names.get(effort, names.get("high", "Master Form"))
+
+
+def resolve_drive_form_color_name(data, config=None):
+    """Get color name for current Drive Form (canonical KH2 colors)."""
+    if config is None:
+        config = DEFAULT_CONFIG
+    effort = resolve_effort_level(data, config)
+    form_colors = config.get("drive_form_colors", DEFAULT_CONFIG["drive_form_colors"])
+    return form_colors.get(effort, form_colors.get("high", "yellow"))
 
 
 # ─── Bar Rendering ───────────────────────────────────────────────
@@ -495,15 +542,17 @@ def render_classic(data, config):
     if hp_pct <= 50:
         color_name = "yellow" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
+    hp_marker = hp_danger_marker(hp_pct)
 
     mp_bar = render_bar("MP", mp_pct, 12, colors.get("mp", "blue"))
-    line1 = f"  {hp_bar}  {mp_bar}"
+    line1 = f"  {hp_bar}{hp_marker}  {mp_bar}"
 
     # Line 2: Keyblade + World + Munny
     kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
     mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
 
-    dc = ANSI.get(colors.get("drive", "magenta"), ANSI["magenta"])
+    drive_color_name = resolve_drive_form_color_name(data, config)
+    dc = ANSI.get(drive_color_name, ANSI["yellow"])
 
     parts = [f"  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
 
@@ -546,8 +595,10 @@ def render_minimal(data, config):
 
     hc = hp_color(hp_pct)
     hp_str = f"{hc}{bld}{hp_pct:.0f}%{rst}" if hp_pct <= 20 else f"{hc}{hp_pct:.0f}%{rst}"
+    hp_str += hp_danger_marker(hp_pct)
 
-    dc = ANSI.get(colors.get("drive", "magenta"), ANSI["magenta"])
+    drive_color_name = resolve_drive_form_color_name(data, config)
+    dc = ANSI.get(drive_color_name, ANSI["yellow"])
 
     parts = [f"{kc}{KEYBLADE_ICON}  {keyblade}{rst}"]
 
@@ -601,8 +652,9 @@ def render_full_rpg(data, config):
     if hp_pct <= 50:
         color_name = "yellow" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
+    hp_marker = hp_danger_marker(hp_pct)
     mp_bar = render_bar("MP", mp_pct, 12, colors.get("mp", "blue"))
-    line1 = f"  {hp_bar}  {mp_bar}"
+    line1 = f"  {hp_bar}{hp_marker}  {mp_bar}"
 
     # Line 2: Keyblade + Level + World
     world = world_name(data, config)
@@ -614,6 +666,7 @@ def render_full_rpg(data, config):
     line2 = "  ".join(line2_parts)
 
     # Line 3: Drive (uncommitted bar) + EXP + Munny + Timer + Party
+    drive_color_name = resolve_drive_form_color_name(data, config)
     line3_parts = []
     if config.get("show_drive", True):
         drive_max = config.get("drive_max_lines", 500)
@@ -625,10 +678,9 @@ def render_full_rpg(data, config):
         else:
             drive_val = drive_lines
         drive_pct = min(100.0, (drive_val / drive_max * 100)) if drive_max > 0 else 0
-        drive_color = colors.get("drive", "magenta")
         drive_width = config.get("drive_bar_width", 10)
         form_name = resolve_drive_form(data, config) if config.get("show_drive_form", True) else "Drive"
-        drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color)
+        drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color_name)
         line3_parts.append(f"  {drive_bar}")
     line3_parts.append(f"{EXP_ICON} {exp} EXP")
 

@@ -108,6 +108,7 @@ BAR_BLOCKS = [" ", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "
 KEYBLADE_ICON = "\U0001f5dd"  # 🗝 Old key — keyblades are keys, not swords
 MUNNY_ICON = "\u25c9"         # ◉ Fisheye — munny orbs are round jewels
 HEART_ICON = "\u2665"         # ♥ Heart — hearts are core KH
+MP_ICON = "\u2727"            # ✧ White four-pointed star — magic sparkle
 WORLD_ICON = "\u2726"         # ✦ Four-pointed star — worlds glow on the world map
 TIMER_ICON = "\u23f1"         # ⏱ Stopwatch — session/journey timer
 DRIVE_ICON = "\u25c6"         # ◆ Diamond — the in-game Drive gauge shape
@@ -547,37 +548,33 @@ def render_classic(data, config):
     rst = ANSI["reset"]
     bld = ANSI["bold"]
 
-    # Line 1: HP (plan usage) + MP (context) bars
+    colors = config.get("colors", DEFAULT_CONFIG["colors"])
+    kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
+    mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
+    drive_color_name = resolve_drive_form_color_name(data, config)
+    dc = ANSI.get(drive_color_name, ANSI["yellow"])
+
+    # Line 1: MP bar + Keyblade + World
+    mp_bar = render_bar(f"{MP_ICON} MP", mp_pct, 12, colors.get("mp", "blue"))
+    line1_parts = [f"  {mp_bar}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
+    if config.get("show_world", True):
+        world = world_name(data, config)
+        line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
+    line1 = "  ".join(line1_parts)
+
+    # Line 2: HP bar + Drive Form + Munny
     color_name = "green"
     if hp_pct <= 50:
         color_name = "yellow" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
-
-    mp_bar = render_bar("MP", mp_pct, 12, colors.get("mp", "blue"))
-    line1 = f"  {hp_bar}{hp_marker}  {mp_bar}"
-
-    # Line 2: Keyblade + World + Munny
-    kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
-    mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
-
-    drive_color_name = resolve_drive_form_color_name(data, config)
-    dc = ANSI.get(drive_color_name, ANSI["yellow"])
-
-    parts = [f"  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
-
+    line2_parts = [f"  {hp_bar}{hp_marker}"]
     if config.get("show_drive_form", True):
         form = resolve_drive_form(data, config)
-        parts.append(f"{dc}{DRIVE_ICON} {form}{rst}")
-
-    if config.get("show_world", True):
-        world = world_name(data, config)
-        parts.append(f"{ANSI['dim']}{WORLD_ICON} {world}{rst}")
-
+        line2_parts.append(f"{dc}{DRIVE_ICON} {form}{rst}")
     if config.get("show_munny", True):
-        parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
-
-    line2 = "  ".join(parts)
+        line2_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
+    line2 = "  ".join(line2_parts)
 
     return line1 + "\n" + line2
 
@@ -587,6 +584,7 @@ def render_classic(data, config):
 def render_minimal(data, config):
     """Minimal KH — single line, subtle references."""
     hp_pct = calculate_hp(data, config)
+    mp_pct = calculate_mp(data)
 
     model = data.get("model", {})
     keyblade = resolve_keyblade(
@@ -599,6 +597,7 @@ def render_minimal(data, config):
     colors = config.get("colors", DEFAULT_CONFIG["colors"])
     kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
     mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
+    mpc = ANSI.get(colors.get("mp", "blue"), ANSI["blue"])
     rst = ANSI["reset"]
     bld = ANSI["bold"]
     dim = ANSI["dim"]
@@ -620,14 +619,15 @@ def render_minimal(data, config):
 
     if config.get("show_world", True):
         world = world_name(data, config)
-        parts.append(f"{dim}{WORLD_ICON} {world}{rst}")
+        parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
 
     parts.append(f"{HEART_ICON} {hp_str}")
+    parts.append(f"{mpc}{MP_ICON} {mp_pct:.0f}%{rst}")
 
     if config.get("show_munny", True):
         parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
 
-    return "  ".join(parts)
+    return "  " + "  ".join(parts)
 
 
 # ─── Theme: Full RPG (3 lines) ──────────────────────────────────
@@ -657,25 +657,26 @@ def render_full_rpg(data, config):
     drive_files, drive_lines = calculate_drive(data, config)
     duration_ms = cost_data.get("total_duration_ms", 0) or 0
 
-    # Line 1: HP (plan usage) + MP (context)
+    # Line 1: MP bar + Keyblade + World
+    mp_bar = render_bar(f"{MP_ICON} MP", mp_pct, 12, colors.get("mp", "blue"))
+    world = world_name(data, config)
+    line1_parts = [f"  {mp_bar}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
+    line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
+    line1 = "  ".join(line1_parts)
+
+    # Line 2: HP bar + Level + EXP
     color_name = "green"
     if hp_pct <= 50:
         color_name = "yellow" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
-    mp_bar = render_bar("MP", mp_pct, 12, colors.get("mp", "blue"))
-    line1 = f"  {hp_bar}{hp_marker}  {mp_bar}"
-
-    # Line 2: Keyblade + Level + World
-    world = world_name(data, config)
     line2_parts = [
-        f"  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}",
-        f"{bld}LV {level}{rst}",
-        f"{dim}{WORLD_ICON} {world}{rst}",
+        f"  {hp_bar}{hp_marker}",
+        f"{bld}LV {level}{rst} ({EXP_ICON} {exp})",
     ]
     line2 = "  ".join(line2_parts)
 
-    # Line 3: Drive (uncommitted bar) + EXP + Munny + Timer + Party
+    # Line 3: Drive (uncommitted bar) + Munny + Timer + Party
     drive_color_name = resolve_drive_form_color_name(data, config)
     line3_parts = []
     if config.get("show_drive", True):
@@ -692,14 +693,13 @@ def render_full_rpg(data, config):
         form_name = resolve_drive_form(data, config) if config.get("show_drive_form", True) else "Drive"
         drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color_name)
         line3_parts.append(f"  {drive_bar}")
-    line3_parts.append(f"{EXP_ICON} {exp} EXP")
 
     if config.get("show_munny", True):
         line3_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
 
     if config.get("show_timer", True):
         journey = format_duration(duration_ms)
-        line3_parts.append(f"{dim}{TIMER_ICON} {journey}{rst}")
+        line3_parts.append(f"{bld}{TIMER_ICON} {journey}{rst}")
 
     agent = data.get("agent") or {}
     agent_name = agent.get("name", "")

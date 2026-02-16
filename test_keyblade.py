@@ -359,7 +359,8 @@ class TestFullRPGTheme(unittest.TestCase):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
         output = keyblade.render_full_rpg(data, config)
-        self.assertIn("230 EXP", output)
+        # EXP is on line 2 next to Level: "LV 3 (♛ 230)"
+        self.assertIn("230)", output)
 
     def test_agent_party_member(self):
         data = make_data(agent={"name": "security-reviewer"})

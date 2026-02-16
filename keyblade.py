@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
     "drive_form_colors": {
         "low": "red",
         "medium": "blue",
-        "high": "yellow",
+        "high": "bright_yellow",
         "max": "bright_white",
     },
     "world_fallback": "Traverse Town",
@@ -435,16 +435,89 @@ def hp_color(pct):
     if pct > 50:
         return ANSI["green"]
     if pct > 20:
-        return ANSI["yellow"]
+        return ANSI["bright_orange"]
     return ANSI["red"]
 
 
 def hp_danger_marker(pct):
     """Return KH-style danger marker for HP percentage."""
+    if pct < 15:
+        return f" {ANSI['red']}{ANSI['bold']}\033[7m\u300cDANGER\u300d\033[27m{ANSI['reset']}"
     if pct < 20:
         return f" {ANSI['red']}{ANSI['bold']}\u300cDANGER\u300d{ANSI['reset']}"
     if pct <= 50:
-        return f" {ANSI['yellow']}\u26a0{ANSI['reset']}"
+        return f" {ANSI['bright_orange']}\u26a0{ANSI['reset']}"
+    return ""
+
+
+def mp_charge_state(mp_pct):
+    """Check if MP is in Charge state (KH2 mechanic).
+
+    When MP drops below 10%, the bar enters 'MP CHARGE' mode —
+    magenta color with a different label, like KH2.
+    """
+    return mp_pct < 10
+
+
+def mp_label_and_color(mp_pct, colors):
+    """Return (label, color) for MP bar, handling MP Charge state."""
+    if mp_charge_state(mp_pct):
+        return f"{MP_ICON} MP", "magenta"
+    return f"{MP_ICON} MP", colors.get("mp", "blue")
+
+
+def mp_charge_marker(mp_pct):
+    """Return MP Charge marker if in charge state."""
+    if mp_charge_state(mp_pct):
+        return f" {ANSI['magenta']}{ANSI['bold']}\u300cMP CHARGE\u300d{ANSI['reset']}"
+    return ""
+
+
+LEVEL_STATE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_level_state.json")
+LEVEL_UP_DURATION = 10  # seconds to show level-up notification
+
+
+def check_level_up(level):
+    """Check if level increased since last render. Returns True if leveled up recently."""
+    try:
+        with open(LEVEL_STATE_FILE) as f:
+            state = json.load(f)
+        prev_level = state.get("level", 0)
+        leveled_at = state.get("ts", 0)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        prev_level = 0
+        leveled_at = 0
+
+    now = time.time()
+
+    if level > prev_level:
+        # Level increased — save new state and show notification
+        try:
+            with open(LEVEL_STATE_FILE, "w") as f:
+                json.dump({"level": level, "ts": now}, f)
+        except OSError:
+            pass
+        return True
+
+    if level == prev_level and (now - leveled_at) < LEVEL_UP_DURATION:
+        # Still within notification window
+        return True
+
+    # Update state without triggering notification
+    if level != prev_level:
+        try:
+            with open(LEVEL_STATE_FILE, "w") as f:
+                json.dump({"level": level, "ts": 0}, f)
+        except OSError:
+            pass
+
+    return False
+
+
+def level_up_marker(level):
+    """Return level-up notification if recently leveled up."""
+    if check_level_up(level):
+        return f" {ANSI['bright_yellow']}{ANSI['bold']}\u300cLEVEL UP!\u300d{ANSI['reset']}"
     return ""
 
 
@@ -555,8 +628,10 @@ def render_classic(data, config):
     dc = ANSI.get(drive_color_name, ANSI["yellow"])
 
     # Line 1: MP bar + Keyblade + World
-    mp_bar = render_bar(f"{MP_ICON} MP", mp_pct, 12, colors.get("mp", "blue"))
-    line1_parts = [f"  {mp_bar}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
+    mp_lbl, mp_clr = mp_label_and_color(mp_pct, colors)
+    mp_bar = render_bar(mp_lbl, mp_pct, 12, mp_clr)
+    mp_marker = mp_charge_marker(mp_pct)
+    line1_parts = [f"  {mp_bar}{mp_marker}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
     if config.get("show_world", True):
         world = world_name(data, config)
         line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
@@ -565,7 +640,7 @@ def render_classic(data, config):
     # Line 2: HP bar + Drive Form + Munny
     color_name = "green"
     if hp_pct <= 50:
-        color_name = "yellow" if hp_pct > 20 else "red"
+        color_name = "bright_orange" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
     line2_parts = [f"  {hp_bar}{hp_marker}"]
@@ -622,7 +697,10 @@ def render_minimal(data, config):
         parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
 
     parts.append(f"{HEART_ICON} {hp_str}")
-    parts.append(f"{mpc}{MP_ICON} {mp_pct:.0f}%{rst}")
+    if mp_charge_state(mp_pct):
+        parts.append(f"{ANSI['magenta']}{MP_ICON} {mp_pct:.0f}% \u300cCHARGE\u300d{rst}")
+    else:
+        parts.append(f"{mpc}{MP_ICON} {mp_pct:.0f}%{rst}")
 
     if config.get("show_munny", True):
         parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
@@ -657,22 +735,25 @@ def render_full_rpg(data, config):
     drive_files, drive_lines = calculate_drive(data, config)
     duration_ms = cost_data.get("total_duration_ms", 0) or 0
 
-    # Line 1: MP bar + Keyblade + World
-    mp_bar = render_bar(f"{MP_ICON} MP", mp_pct, 12, colors.get("mp", "blue"))
+    # Line 1: MP bar (with Charge state) + Keyblade + World
+    mp_lbl, mp_clr = mp_label_and_color(mp_pct, colors)
+    mp_bar = render_bar(mp_lbl, mp_pct, 12, mp_clr)
+    mp_marker = mp_charge_marker(mp_pct)
     world = world_name(data, config)
-    line1_parts = [f"  {mp_bar}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
+    line1_parts = [f"  {mp_bar}{mp_marker}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
     line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
     line1 = "  ".join(line1_parts)
 
-    # Line 2: HP bar + Level + EXP
+    # Line 2: HP bar (with tick marks) + Level + EXP + Level-Up
     color_name = "green"
     if hp_pct <= 50:
-        color_name = "yellow" if hp_pct > 20 else "red"
+        color_name = "bright_orange" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
+    lvl_up = level_up_marker(level)
     line2_parts = [
         f"  {hp_bar}{hp_marker}",
-        f"{bld}LV {level}{rst} ({EXP_ICON} {exp})",
+        f"{bld}LV {level}{rst} ({EXP_ICON} {exp}){lvl_up}",
     ]
     line2 = "  ".join(line2_parts)
 

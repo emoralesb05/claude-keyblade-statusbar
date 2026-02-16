@@ -31,7 +31,7 @@
   "drive_form_colors": {
     "low": "red",
     "medium": "blue",
-    "high": "yellow",
+    "high": "bright_yellow",
     "max": "bright_white"
   },
   "world_fallback": "Traverse Town",

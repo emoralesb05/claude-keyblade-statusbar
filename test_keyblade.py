@@ -285,8 +285,8 @@ class TestHPColor(unittest.TestCase):
     def test_green_above_50(self):
         self.assertEqual(keyblade.hp_color(75), keyblade.ANSI["green"])
 
-    def test_yellow_20_to_50(self):
-        self.assertEqual(keyblade.hp_color(35), keyblade.ANSI["yellow"])
+    def test_orange_20_to_50(self):
+        self.assertEqual(keyblade.hp_color(35), keyblade.ANSI["bright_orange"])
 
     def test_red_below_20(self):
         self.assertEqual(keyblade.hp_color(10), keyblade.ANSI["red"])
@@ -605,9 +605,9 @@ class TestDriveFormColorName(unittest.TestCase):
         data = make_data()
         self.assertEqual(keyblade.resolve_drive_form_color_name(data), "blue")
 
-    def test_high_is_yellow(self):
+    def test_high_is_bright_yellow(self):
         data = make_data()
-        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "yellow")
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "bright_yellow")
 
     def test_max_is_bright_white(self):
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
@@ -683,6 +683,109 @@ class TestNoColor(unittest.TestCase):
             os.environ["CLICOLOR"] = orig_cl
         else:
             del os.environ["CLICOLOR"]
+
+
+class TestMPChargeState(unittest.TestCase):
+    def test_charge_below_10(self):
+        self.assertTrue(keyblade.mp_charge_state(5))
+
+    def test_no_charge_at_10(self):
+        self.assertFalse(keyblade.mp_charge_state(10))
+
+    def test_no_charge_at_75(self):
+        self.assertFalse(keyblade.mp_charge_state(75))
+
+    def test_charge_label_and_color(self):
+        lbl, clr = keyblade.mp_label_and_color(5, {"mp": "blue"})
+        self.assertIn("MP", lbl)
+        self.assertEqual(clr, "magenta")
+
+    def test_charge_marker(self):
+        marker = keyblade.mp_charge_marker(5)
+        self.assertIn("CHARGE", marker)
+
+    def test_no_charge_marker(self):
+        marker = keyblade.mp_charge_marker(75)
+        self.assertEqual(marker, "")
+
+    def test_normal_label_and_color(self):
+        lbl, clr = keyblade.mp_label_and_color(75, {"mp": "blue"})
+        self.assertIn("MP", lbl)
+        self.assertNotIn("CHARGE", lbl)
+        self.assertEqual(clr, "blue")
+
+    def test_classic_shows_charge(self):
+        data = make_data()
+        data["context_window"]["remaining_percentage"] = 5
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_classic(data, config)
+        self.assertIn("CHARGE", output)
+
+    def test_minimal_shows_charge(self):
+        data = make_data()
+        data["context_window"]["remaining_percentage"] = 5
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_minimal(data, config)
+        self.assertIn("CHARGE", output)
+
+    def test_full_rpg_shows_charge(self):
+        data = make_data()
+        data["context_window"]["remaining_percentage"] = 5
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_full_rpg(data, config)
+        self.assertIn("CHARGE", output)
+
+
+
+class TestCriticalHPReverseVideo(unittest.TestCase):
+    def test_reverse_video_below_15(self):
+        marker = keyblade.hp_danger_marker(10)
+        self.assertIn("DANGER", marker)
+        # Reverse video escape: \033[7m
+        self.assertIn("\033[7m", marker)
+
+    def test_no_reverse_at_18(self):
+        marker = keyblade.hp_danger_marker(18)
+        self.assertIn("DANGER", marker)
+        self.assertNotIn("\033[7m", marker)
+
+
+class TestLevelUp(unittest.TestCase):
+    def setUp(self):
+        # Clean state file
+        try:
+            os.remove(keyblade.LEVEL_STATE_FILE)
+        except FileNotFoundError:
+            pass
+
+    def tearDown(self):
+        try:
+            os.remove(keyblade.LEVEL_STATE_FILE)
+        except FileNotFoundError:
+            pass
+
+    def test_first_level_triggers_notification(self):
+        result = keyblade.check_level_up(1)
+        self.assertTrue(result)
+
+    def test_same_level_no_notification_after_duration(self):
+        # Set state with expired timestamp
+        import json
+        with open(keyblade.LEVEL_STATE_FILE, "w") as f:
+            json.dump({"level": 5, "ts": 0}, f)
+        result = keyblade.check_level_up(5)
+        self.assertFalse(result)
+
+    def test_level_increase_triggers_notification(self):
+        import json
+        with open(keyblade.LEVEL_STATE_FILE, "w") as f:
+            json.dump({"level": 3, "ts": 0}, f)
+        result = keyblade.check_level_up(4)
+        self.assertTrue(result)
+
+    def test_level_up_marker_text(self):
+        marker = keyblade.level_up_marker(1)
+        self.assertIn("LEVEL UP!", marker)
 
 
 if __name__ == "__main__":

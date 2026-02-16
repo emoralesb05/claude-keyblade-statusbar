@@ -245,18 +245,18 @@ class TestCalculateExp(unittest.TestCase):
 
 class TestBarRendering(unittest.TestCase):
     def test_full_bar(self):
-        bar = keyblade.render_bar("HP", 100, 10, "green")
+        bar = keyblade.render_bar(100, 10, "green")
         self.assertIn(keyblade.BAR_FULL, bar)
         self.assertIn("100%", bar)
 
     def test_empty_bar(self):
-        bar = keyblade.render_bar("HP", 0, 10, "green")
+        bar = keyblade.render_bar(0, 10, "green")
         self.assertNotIn(keyblade.BAR_FULL, bar)
         self.assertIn("0%", bar)
 
     def test_smooth_partial_block(self):
         # 45% of 10 = 4.5 chars → 4 full + ▌ (4/8) partial block
-        bar = keyblade.render_bar("HP", 45, 10, "green")
+        bar = keyblade.render_bar(45, 10, "green")
         self.assertIn(keyblade.BAR_FULL, bar)
         self.assertIn("45%", bar)
         # Should contain a partial block character (3/8 or thicker)
@@ -265,19 +265,19 @@ class TestBarRendering(unittest.TestCase):
         self.assertTrue(has_partial, "Bar at 45% should contain a partial block character")
 
     def test_half_bar(self):
-        bar = keyblade.render_bar("HP", 50, 10, "green")
+        bar = keyblade.render_bar(50, 10, "green")
         self.assertIn("50%", bar)
 
     def test_no_pct(self):
-        bar = keyblade.render_bar("HP", 50, 10, "green", show_pct=False)
+        bar = keyblade.render_bar(50, 10, "green", show_pct=False)
         self.assertNotIn("%", bar)
 
     def test_clamps_over_100(self):
-        bar = keyblade.render_bar("HP", 150, 10, "green")
+        bar = keyblade.render_bar(150, 10, "green")
         self.assertIn("100%", bar)
 
     def test_clamps_under_0(self):
-        bar = keyblade.render_bar("HP", -10, 10, "green")
+        bar = keyblade.render_bar(-10, 10, "green")
         self.assertIn("0%", bar)
 
 
@@ -312,12 +312,12 @@ class TestClassicTheme(unittest.TestCase):
         output = keyblade.render_classic(data, config)
         self.assertIn(keyblade.MUNNY_ICON, output)
 
-    def test_contains_hp_mp(self):
+    def test_contains_hp_mp_icons(self):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
         output = keyblade.render_classic(data, config)
-        self.assertIn("HP", output)
-        self.assertIn("MP", output)
+        self.assertIn(keyblade.HEART_ICON, output)
+        self.assertIn(keyblade.MP_ICON, output)
 
 
 class TestMinimalTheme(unittest.TestCase):

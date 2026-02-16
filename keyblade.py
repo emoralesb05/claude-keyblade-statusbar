@@ -21,7 +21,7 @@ DEFAULT_CONFIG = {
     "show_drive": True,
     "drive_max_lines": 500,
     "drive_source": "lines",
-    "drive_bar_width": 10,
+    "drive_bar_width": 14,
     "drive_include_untracked": True,
     "level_per": 100,
     "level_curve": "linear",
@@ -80,6 +80,21 @@ ANSI_BASIC = {
     "bright_yellow": "\033[93m",
     "bright_white": "\033[97m",
     "bright_orange": "\033[38;5;208m",
+    # Background colors for bar tracks (basic: just use dim)
+    "bg_green": "\033[42m",
+    "bg_blue": "\033[44m",
+    "bg_red": "\033[41m",
+    "bg_magenta": "\033[45m",
+    "bg_yellow": "\033[43m",
+    "bg_bright_yellow": "\033[43m",
+    "bg_bright_white": "\033[47m",
+    "bg_bright_orange": "\033[43m",
+    "bg_dim": "\033[100m",
+    # Frame color
+    "frame": "\033[90m",
+    # Icon-specific colors
+    "icon_heart": "\033[91m",
+    "icon_mp": "\033[94m",
 }
 
 # True color (24-bit RGB) — extracted from KH game assets
@@ -100,6 +115,21 @@ ANSI_TRUECOLOR = {
     "bright_yellow": "\033[38;2;255;215;80m",# #FFD750 — Master Form gold
     "bright_white": "\033[38;2;245;245;255m",# #F5F5FF — Final Form silver-white
     "bright_orange": "\033[38;2;240;150;50m",# #F09632 — HP warning amber
+    # Background colors for bar tracks (darkened versions of foreground)
+    "bg_green": "\033[48;2;35;50;20m",        # dark KH green
+    "bg_blue": "\033[48;2;8;25;55m",          # dark KH blue
+    "bg_red": "\033[48;2;55;20;15m",          # dark KH red
+    "bg_magenta": "\033[48;2;50;35;45m",      # dark KH pink
+    "bg_yellow": "\033[48;2;60;50;18m",       # dark KH gold
+    "bg_bright_yellow": "\033[48;2;60;50;18m",# dark Master Form gold
+    "bg_bright_white": "\033[48;2;40;40;45m", # dark Final Form
+    "bg_bright_orange": "\033[48;2;60;38;12m",# dark HP warning amber
+    "bg_dim": "\033[48;2;25;25;25m",          # dark gray (Anti Form)
+    # Frame color (muted gray for bar brackets)
+    "frame": "\033[38;2;100;100;100m",
+    # Icon-specific colors (always the same regardless of bar state)
+    "icon_heart": "\033[38;2;255;100;80m",    # bright red heart
+    "icon_mp": "\033[38;2;80;150;230m",       # bright blue sparkle
 }
 
 
@@ -145,6 +175,7 @@ MP_ICON = "\u2727"            # ✧ White four-pointed star — magic sparkle
 WORLD_ICON = "\u2726"         # ✦ Four-pointed star — worlds glow on the world map
 TIMER_ICON = "\u23f1"         # ⏱ Stopwatch — session/journey timer
 DRIVE_ICON = "\u25c6"         # ◆ Diamond — the in-game Drive gauge shape
+FORM_ICON = "\u2736"          # ✶ Six-pointed star — Drive Form transformation aura
 EXP_ICON = "\u265b"           # ♛ Crown — Sora's crown necklace
 PARTY_ICON = "\u2666"         # ♦ Diamond suit — party member indicator
 
@@ -555,8 +586,8 @@ def mp_charge_state(mp_pct):
 def mp_label_and_color(mp_pct, colors):
     """Return (label, color) for MP bar, handling MP Charge state."""
     if mp_charge_state(mp_pct):
-        return f"{MP_ICON} MP", "magenta"
-    return f"{MP_ICON} MP", colors.get("mp", "blue")
+        return "MP", "magenta"
+    return "MP", colors.get("mp", "blue")
 
 
 def mp_charge_marker(mp_pct):
@@ -705,12 +736,21 @@ def resolve_drive_form_color_name(data, config=None):
 
 # ─── Bar Rendering ───────────────────────────────────────────────
 
-def render_bar(label, percentage, width, color, show_pct=True):
-    """Render an HP/MP-style bar using smooth Unicode block characters."""
+def render_bar(percentage, width, color, show_pct=True, icon="", icon_color=""):
+    """Render a KH-style bar with background track and icon.
+
+    Args:
+        percentage: Fill percentage (0-100)
+        width: Bar width in characters
+        color: Color name for the fill (key in ANSI dict)
+        show_pct: Show percentage text after bar
+        icon: Icon character (e.g. HEART_ICON) — rendered in its own color
+        icon_color: ANSI key for icon color (e.g. "icon_heart")
+    """
     c = ANSI.get(color, ANSI["green"])
-    dim = ANSI["dim"]
     rst = ANSI["reset"]
     bld = ANSI["bold"]
+    bg = ANSI.get(f"bg_{color}", "")
 
     pct = max(0.0, min(100.0, percentage))
     value = pct / 100.0 * width
@@ -724,10 +764,20 @@ def render_bar(label, percentage, width, color, show_pct=True):
     partial = BAR_BLOCKS[partial_idx] if partial_idx >= 3 and full < width else ""
     empty = width - full - (1 if partial else 0)
 
-    bar = c + bld + (BAR_FULL * full) + partial + dim + (BAR_EMPTY * max(0, empty)) + rst
+    # Fill portion in bar color, empty portion with background-colored track
+    fill_part = c + bld + (BAR_FULL * full) + partial
+    if bg:
+        empty_part = bg + (" " * max(0, empty)) + rst
+    else:
+        empty_part = ANSI["dim"] + (BAR_EMPTY * max(0, empty)) + rst
 
+    bar = fill_part + empty_part
+
+    # Icon in its own color, no brackets, no label text
+    ic = ANSI.get(icon_color, c) if icon_color else c
+    icon_str = f"{ic}{icon}{rst} " if icon else ""
     pct_str = f" {pct:.0f}%" if show_pct else ""
-    return f"{bld}{c}{label}{rst} [{bar}]{c}{pct_str}{rst}"
+    return f"{icon_str}{bar}{c}{pct_str}{rst}"
 
 
 # ─── Theme: Classic KH HUD (2 lines) ────────────────────────────
@@ -767,8 +817,8 @@ def render_classic(data, config):
     dc = ANSI.get(drive_color_name, ANSI["yellow"])
 
     # Line 1: MP bar + Keyblade + World
-    mp_lbl, mp_clr = mp_label_and_color(mp_pct, colors)
-    mp_bar = render_bar(mp_lbl, mp_pct, 12, mp_clr)
+    _, mp_clr = mp_label_and_color(mp_pct, colors)
+    mp_bar = render_bar(mp_pct, 16, mp_clr, icon=MP_ICON, icon_color="icon_mp")
     mp_marker = mp_charge_marker(mp_pct)
     line1_parts = [f"  {mp_bar}{mp_marker}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
     if config.get("show_world", True):
@@ -780,12 +830,12 @@ def render_classic(data, config):
     color_name = "green"
     if hp_pct <= 50:
         color_name = "bright_orange" if hp_pct > 20 else "red"
-    hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
+    hp_bar = render_bar(hp_pct, 24, color_name, icon=HEART_ICON, icon_color="icon_heart")
     hp_marker = hp_danger_marker(hp_pct)
     sp_marker = save_point_marker(drive_files, drive_lines, data)
     line2_parts = [f"  {hp_bar}{hp_marker}{sp_marker}"]
     if config.get("show_drive_form", True):
-        line2_parts.append(f"{dc}{DRIVE_ICON} {form_name}{rst}")
+        line2_parts.append(f"{dc}{FORM_ICON} {form_name}{rst}")
     if config.get("show_munny", True):
         line2_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
     line2 = "  ".join(line2_parts)
@@ -840,7 +890,7 @@ def render_minimal(data, config):
     if config.get("show_drive_form", True):
         # Strip " Form" suffix for compact display
         short_form = form_name.replace(" Form", "")
-        parts.append(f"{dc}{DRIVE_ICON} {short_form}{rst}")
+        parts.append(f"{dc}{FORM_ICON} {short_form}{rst}")
 
     if config.get("show_world", True):
         world = world_name(data, config)
@@ -886,8 +936,8 @@ def render_full_rpg(data, config):
     duration_ms = cost_data.get("total_duration_ms", 0) or 0
 
     # Line 1: MP bar (with Charge state) + Keyblade + World
-    mp_lbl, mp_clr = mp_label_and_color(mp_pct, colors)
-    mp_bar = render_bar(mp_lbl, mp_pct, 12, mp_clr)
+    _, mp_clr = mp_label_and_color(mp_pct, colors)
+    mp_bar = render_bar(mp_pct, 16, mp_clr, icon=MP_ICON, icon_color="icon_mp")
     mp_marker = mp_charge_marker(mp_pct)
     world = world_name(data, config)
     line1_parts = [f"  {mp_bar}{mp_marker}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
@@ -898,7 +948,7 @@ def render_full_rpg(data, config):
     color_name = "green"
     if hp_pct <= 50:
         color_name = "bright_orange" if hp_pct > 20 else "red"
-    hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
+    hp_bar = render_bar(hp_pct, 24, color_name, icon=HEART_ICON, icon_color="icon_heart")
     hp_marker = hp_danger_marker(hp_pct)
     lvl_up = level_up_marker(level, data)
     sp_marker = save_point_marker(drive_files, drive_lines, data)
@@ -909,7 +959,7 @@ def render_full_rpg(data, config):
     line2 = "  ".join(line2_parts)
 
     # Line 3: Drive (uncommitted bar) + Munny + Timer + Party
-    drive_width = config.get("drive_bar_width", 10)
+    drive_width = config.get("drive_bar_width", 14)
     line3_parts = []
     if config.get("show_drive", True):
         drive_max = config.get("drive_max_lines", 500)
@@ -931,8 +981,9 @@ def render_full_rpg(data, config):
         else:
             form_name = "Drive"
             drive_color_name = resolve_drive_form_color_name(data, config)
-        drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color_name)
-        line3_parts.append(f"  {drive_bar}")
+        drive_bar = render_bar(drive_pct, drive_width, drive_color_name, icon=DRIVE_ICON)
+        dc = ANSI.get(drive_color_name, ANSI["yellow"])
+        line3_parts.append(f"  {drive_bar}  {dc}{FORM_ICON} {form_name}{rst}")
 
     if config.get("show_munny", True):
         line3_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")

@@ -1,5 +1,6 @@
 {
   "theme": "classic",
+  "color_mode": "auto",
   "hp_source": "5_hour",
   "hp_budget_usd": 5.00,
   "hp_usage_cache_ttl": 60,

@@ -14,6 +14,7 @@ import urllib.request
 
 DEFAULT_CONFIG = {
     "theme": "classic",
+    "color_mode": "auto",
     "hp_source": "5_hour",
     "hp_budget_usd": 5.00,
     "hp_usage_cache_ttl": 60,
@@ -61,7 +62,8 @@ DEFAULT_CONFIG = {
 
 # ─── ANSI Color Helpers ─────────────────────────────────────────
 
-ANSI = {
+# Basic 16-color ANSI (maximum compatibility)
+ANSI_BASIC = {
     "reset": "\033[0m",
     "bold": "\033[1m",
     "dim": "\033[2m",
@@ -80,23 +82,54 @@ ANSI = {
     "bright_orange": "\033[38;5;208m",
 }
 
+# True color (24-bit RGB) — extracted from KH game assets
+ANSI_TRUECOLOR = {
+    "reset": "\033[0m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "green": "\033[38;2;142;188;79m",       # #8EBC4F — KH HP bar green
+    "blue": "\033[38;2;24;95;173m",          # #185FAD — KH MP bar blue
+    "cyan": "\033[38;2;100;200;220m",        # #64C8DC — KH menu/keyblade cyan
+    "yellow": "\033[38;2;248;193;105m",      # #F8C169 — KH munny gold
+    "red": "\033[38;2;225;82;57m",           # #E15239 — KH critical/Valor red
+    "magenta": "\033[38;2;219;168;205m",     # #DBA8CD — KH MP Charge pink
+    "white": "\033[38;2;220;220;230m",       # #DCDCE6 — soft white
+    "bright_green": "\033[38;2;160;210;90m", # #A0D25A — brighter KH green
+    "bright_blue": "\033[38;2;60;130;210m",  # #3C82D2 — Wisdom Form blue
+    "bright_cyan": "\033[38;2;130;220;240m", # #82DCF0 — bright KH cyan
+    "bright_yellow": "\033[38;2;255;215;80m",# #FFD750 — Master Form gold
+    "bright_white": "\033[38;2;245;245;255m",# #F5F5FF — Final Form silver-white
+    "bright_orange": "\033[38;2;240;150;50m",# #F09632 — HP warning amber
+}
 
-def _should_use_color():
-    """Check NO_COLOR and CLICOLOR status.
 
-    Default to color ON since Claude Code captures stdout via pipe
-    (isatty would be False) but renders the output in a terminal.
-    Only suppress color when explicitly requested.
+def _detect_color_mode():
+    """Detect terminal color capability.
+
+    Returns 'truecolor', 'basic', or 'none'.
     """
     if os.environ.get("NO_COLOR") is not None:
-        return False
+        return "none"
     if os.environ.get("CLICOLOR") == "0":
-        return False
-    return True
+        return "none"
+    colorterm = os.environ.get("COLORTERM", "")
+    if colorterm in ("truecolor", "24bit"):
+        return "truecolor"
+    return "basic"
 
 
-if not _should_use_color():
-    ANSI = {k: "" for k in ANSI}
+def _resolve_ansi(color_mode_override=None):
+    """Resolve ANSI color dict based on mode."""
+    mode = color_mode_override or _detect_color_mode()
+    if mode == "none":
+        return {k: "" for k in ANSI_BASIC}
+    if mode == "truecolor":
+        return dict(ANSI_TRUECOLOR)
+    return dict(ANSI_BASIC)
+
+
+# Initial resolution — may be overridden by config in load_config()
+ANSI = _resolve_ansi()
 
 # ─── Unicode Constants ───────────────────────────────────────────
 
@@ -139,6 +172,14 @@ def load_config():
                 config[key] = merged
     except (FileNotFoundError, json.JSONDecodeError, PermissionError):
         pass
+
+    # Apply color_mode from config (override auto-detection)
+    global ANSI
+    mode = config.get("color_mode", "auto")
+    if mode == "auto":
+        ANSI = _resolve_ansi()
+    else:
+        ANSI = _resolve_ansi(mode)
 
     return config
 

@@ -647,42 +647,71 @@ class TestHPDangerMarker(unittest.TestCase):
         self.assertIn("DANGER", marker)
 
 
-class TestNoColor(unittest.TestCase):
-    def test_should_use_color_no_color_set(self):
+class TestColorMode(unittest.TestCase):
+    def test_no_color_returns_none(self):
         orig = os.environ.get("NO_COLOR")
         os.environ["NO_COLOR"] = "1"
-        self.assertFalse(keyblade._should_use_color())
+        self.assertEqual(keyblade._detect_color_mode(), "none")
         if orig is not None:
             os.environ["NO_COLOR"] = orig
         else:
             del os.environ["NO_COLOR"]
 
-    def test_should_use_color_default_true(self):
+    def test_default_is_basic(self):
         orig_nc = os.environ.get("NO_COLOR")
         orig_cl = os.environ.get("CLICOLOR")
+        orig_ct = os.environ.get("COLORTERM")
         if "NO_COLOR" in os.environ:
             del os.environ["NO_COLOR"]
         if "CLICOLOR" in os.environ:
             del os.environ["CLICOLOR"]
-        self.assertTrue(keyblade._should_use_color())
+        if "COLORTERM" in os.environ:
+            del os.environ["COLORTERM"]
+        self.assertEqual(keyblade._detect_color_mode(), "basic")
         if orig_nc is not None:
             os.environ["NO_COLOR"] = orig_nc
         if orig_cl is not None:
             os.environ["CLICOLOR"] = orig_cl
+        if orig_ct is not None:
+            os.environ["COLORTERM"] = orig_ct
 
-    def test_should_use_color_clicolor_zero(self):
+    def test_clicolor_zero_returns_none(self):
         orig_nc = os.environ.get("NO_COLOR")
         orig_cl = os.environ.get("CLICOLOR")
         if "NO_COLOR" in os.environ:
             del os.environ["NO_COLOR"]
         os.environ["CLICOLOR"] = "0"
-        self.assertFalse(keyblade._should_use_color())
+        self.assertEqual(keyblade._detect_color_mode(), "none")
         if orig_nc is not None:
             os.environ["NO_COLOR"] = orig_nc
         if orig_cl is not None:
             os.environ["CLICOLOR"] = orig_cl
         else:
             del os.environ["CLICOLOR"]
+
+    def test_truecolor_detected(self):
+        orig_nc = os.environ.get("NO_COLOR")
+        orig_ct = os.environ.get("COLORTERM")
+        if "NO_COLOR" in os.environ:
+            del os.environ["NO_COLOR"]
+        os.environ["COLORTERM"] = "truecolor"
+        self.assertEqual(keyblade._detect_color_mode(), "truecolor")
+        if orig_nc is not None:
+            os.environ["NO_COLOR"] = orig_nc
+        if orig_ct is not None:
+            os.environ["COLORTERM"] = orig_ct
+        else:
+            del os.environ["COLORTERM"]
+
+    def test_resolve_ansi_none_blanks_all(self):
+        ansi = keyblade._resolve_ansi("none")
+        self.assertEqual(ansi["green"], "")
+        self.assertEqual(ansi["bold"], "")
+
+    def test_resolve_ansi_truecolor_uses_rgb(self):
+        ansi = keyblade._resolve_ansi("truecolor")
+        # True color codes use 38;2;R;G;B format
+        self.assertIn("38;2;", ansi["green"])
 
 
 class TestMPChargeState(unittest.TestCase):

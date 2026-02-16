@@ -783,13 +783,13 @@ class TestLevelUp(unittest.TestCase):
     def setUp(self):
         # Clean state file
         try:
-            os.remove(keyblade.LEVEL_STATE_FILE)
+            os.remove(keyblade.STATE_FILE)
         except FileNotFoundError:
             pass
 
     def tearDown(self):
         try:
-            os.remove(keyblade.LEVEL_STATE_FILE)
+            os.remove(keyblade.STATE_FILE)
         except FileNotFoundError:
             pass
 
@@ -799,16 +799,12 @@ class TestLevelUp(unittest.TestCase):
 
     def test_same_level_no_notification_after_duration(self):
         # Set state with expired timestamp
-        import json
-        with open(keyblade.LEVEL_STATE_FILE, "w") as f:
-            json.dump({"level": 5, "ts": 0}, f)
+        keyblade._write_project_state({}, {"level_up": {"level": 5, "ts": 0}})
         result = keyblade.check_level_up(5)
         self.assertFalse(result)
 
     def test_level_increase_triggers_notification(self):
-        import json
-        with open(keyblade.LEVEL_STATE_FILE, "w") as f:
-            json.dump({"level": 3, "ts": 0}, f)
+        keyblade._write_project_state({}, {"level_up": {"level": 3, "ts": 0}})
         result = keyblade.check_level_up(4)
         self.assertTrue(result)
 
@@ -861,13 +857,13 @@ class TestAntiForm(unittest.TestCase):
 class TestSavePoint(unittest.TestCase):
     def setUp(self):
         try:
-            os.remove(keyblade.SAVE_POINT_STATE_FILE)
+            os.remove(keyblade.STATE_FILE)
         except FileNotFoundError:
             pass
 
     def tearDown(self):
         try:
-            os.remove(keyblade.SAVE_POINT_STATE_FILE)
+            os.remove(keyblade.STATE_FILE)
         except FileNotFoundError:
             pass
 
@@ -889,8 +885,7 @@ class TestSavePoint(unittest.TestCase):
 
     def test_save_point_expires(self):
         # Simulate an old save point
-        with open(keyblade.SAVE_POINT_STATE_FILE, "w") as f:
-            json.dump({"clean": True, "ts": 0}, f)
+        keyblade._write_project_state({}, {"save_point": {"clean": True, "ts": 0}})
         result = keyblade.check_save_point(0, 0)
         self.assertFalse(result)
 

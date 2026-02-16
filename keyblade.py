@@ -185,9 +185,54 @@ def load_config():
 
 
 
-# ─── Data Helpers ────────────────────────────────────────────────
+# ─── State File ──────────────────────────────────────────────────
 
-USAGE_CACHE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_usage_cache.json")
+STATE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_state.json")
+
+
+def _read_state():
+    """Read the shared state file. Returns dict."""
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _write_state(state):
+    """Write the shared state file."""
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
+
+
+def _project_key(data):
+    """Get project directory name for keying per-project state."""
+    ws = data.get("workspace", {})
+    d = ws.get("current_dir", "") or ws.get("project_dir", "")
+    return os.path.basename(d) if d else "_default"
+
+
+def _read_project_state(data):
+    """Read per-project state (level_up, save_point)."""
+    state = _read_state()
+    key = _project_key(data)
+    return state.get("projects", {}).get(key, {})
+
+
+def _write_project_state(data, project_state):
+    """Write per-project state, preserving global and other project state."""
+    state = _read_state()
+    key = _project_key(data)
+    if "projects" not in state:
+        state["projects"] = {}
+    state["projects"][key] = project_state
+    _write_state(state)
+
+
+# ─── Data Helpers ────────────────────────────────────────────────
 
 
 def resolve_keyblade(model_id, model_display, config):
@@ -208,13 +253,10 @@ def get_plan_usage(config):
     ttl = config.get("hp_usage_cache_ttl", 60)
 
     # Check cache first
-    try:
-        with open(USAGE_CACHE_FILE) as f:
-            cache = json.load(f)
-        if time.time() - cache.get("ts", 0) < ttl:
-            return cache.get("five_hour", 0), cache.get("seven_day", 0)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
-        pass
+    state = _read_state()
+    cache = state.get("usage_cache", {})
+    if time.time() - cache.get("ts", 0) < ttl:
+        return cache.get("five_hour", 0), cache.get("seven_day", 0)
 
     # Extract OAuth token — macOS Keychain or Linux credential file
     try:
@@ -263,8 +305,9 @@ def get_plan_usage(config):
         seven_day = body.get("seven_day", {}).get("utilization", 0) or 0
 
         # Write cache
-        with open(USAGE_CACHE_FILE, "w") as f:
-            json.dump({"ts": time.time(), "five_hour": five_hour, "seven_day": seven_day}, f)
+        state = _read_state()
+        state["usage_cache"] = {"ts": time.time(), "five_hour": five_hour, "seven_day": seven_day}
+        _write_state(state)
 
         return five_hour, seven_day
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError,
@@ -523,99 +566,75 @@ def mp_charge_marker(mp_pct):
     return ""
 
 
-LEVEL_STATE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_level_state.json")
 LEVEL_UP_DURATION = 10  # seconds to show level-up notification
 
 
-def check_level_up(level):
+def check_level_up(level, data=None):
     """Check if level increased since last render. Returns True if leveled up recently."""
-    try:
-        with open(LEVEL_STATE_FILE) as f:
-            state = json.load(f)
-        prev_level = state.get("level", 0)
-        leveled_at = state.get("ts", 0)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
-        prev_level = 0
-        leveled_at = 0
+    if data is None:
+        data = {}
+    pstate = _read_project_state(data)
+    lvl_state = pstate.get("level_up", {})
+    prev_level = lvl_state.get("level", 0)
+    leveled_at = lvl_state.get("ts", 0)
 
     now = time.time()
 
     if level > prev_level:
-        # Level increased — save new state and show notification
-        try:
-            with open(LEVEL_STATE_FILE, "w") as f:
-                json.dump({"level": level, "ts": now}, f)
-        except OSError:
-            pass
+        pstate["level_up"] = {"level": level, "ts": now}
+        _write_project_state(data, pstate)
         return True
 
     if level == prev_level and (now - leveled_at) < LEVEL_UP_DURATION:
-        # Still within notification window
         return True
 
-    # Update state without triggering notification
     if level != prev_level:
-        try:
-            with open(LEVEL_STATE_FILE, "w") as f:
-                json.dump({"level": level, "ts": 0}, f)
-        except OSError:
-            pass
+        pstate["level_up"] = {"level": level, "ts": 0}
+        _write_project_state(data, pstate)
 
     return False
 
 
-def level_up_marker(level):
+def level_up_marker(level, data=None):
     """Return level-up notification if recently leveled up."""
-    if check_level_up(level):
+    if check_level_up(level, data):
         return f" {ANSI['bright_yellow']}{ANSI['bold']}\u300cLEVEL UP!\u300d{ANSI['reset']}"
     return ""
 
 
-SAVE_POINT_STATE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_savepoint_state.json")
 SAVE_POINT_DURATION = 10  # seconds to show save point notification
 
 
-def check_save_point(drive_files, drive_lines):
+def check_save_point(drive_files, drive_lines, data=None):
     """Check if working tree just became clean. Returns True within notification window."""
+    if data is None:
+        data = {}
     is_clean = (drive_files == 0 and drive_lines == 0)
-    try:
-        with open(SAVE_POINT_STATE_FILE) as f:
-            state = json.load(f)
-        was_clean = state.get("clean", False)
-        saved_at = state.get("ts", 0)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
-        was_clean = False
-        saved_at = 0
+    pstate = _read_project_state(data)
+    sp_state = pstate.get("save_point", {})
+    was_clean = sp_state.get("clean", False)
+    saved_at = sp_state.get("ts", 0)
 
     now = time.time()
 
     if is_clean and not was_clean:
-        # Tree just became clean — save state and show notification
-        try:
-            with open(SAVE_POINT_STATE_FILE, "w") as f:
-                json.dump({"clean": True, "ts": now}, f)
-        except OSError:
-            pass
+        pstate["save_point"] = {"clean": True, "ts": now}
+        _write_project_state(data, pstate)
         return True
 
     if is_clean and was_clean and (now - saved_at) < SAVE_POINT_DURATION:
-        # Still within notification window
         return True
 
-    # Update state if changed
     if is_clean != was_clean:
-        try:
-            with open(SAVE_POINT_STATE_FILE, "w") as f:
-                json.dump({"clean": is_clean, "ts": 0}, f)
-        except OSError:
-            pass
+        pstate["save_point"] = {"clean": is_clean, "ts": 0}
+        _write_project_state(data, pstate)
 
     return False
 
 
-def save_point_marker(drive_files, drive_lines):
+def save_point_marker(drive_files, drive_lines, data=None):
     """Return Save Point badge if working tree just became clean."""
-    if check_save_point(drive_files, drive_lines):
+    if check_save_point(drive_files, drive_lines, data):
         return f" {ANSI['bright_green']}{ANSI['bold']}\u300cSAVE POINT\u300d{ANSI['reset']}"
     return ""
 
@@ -763,7 +782,7 @@ def render_classic(data, config):
         color_name = "bright_orange" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
-    sp_marker = save_point_marker(drive_files, drive_lines)
+    sp_marker = save_point_marker(drive_files, drive_lines, data)
     line2_parts = [f"  {hp_bar}{hp_marker}{sp_marker}"]
     if config.get("show_drive_form", True):
         line2_parts.append(f"{dc}{DRIVE_ICON} {form_name}{rst}")
@@ -805,7 +824,7 @@ def render_minimal(data, config):
     hc = hp_color(hp_pct)
     hp_str = f"{hc}{bld}{hp_pct:.0f}%{rst}" if hp_pct <= 20 else f"{hc}{hp_pct:.0f}%{rst}"
     hp_str += hp_danger_marker(hp_pct)
-    hp_str += save_point_marker(drive_files, drive_lines)
+    hp_str += save_point_marker(drive_files, drive_lines, data)
 
     # Anti Form check
     if is_anti_form(hp_pct, mp_pct, drive_pct):
@@ -881,8 +900,8 @@ def render_full_rpg(data, config):
         color_name = "bright_orange" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
-    lvl_up = level_up_marker(level)
-    sp_marker = save_point_marker(drive_files, drive_lines)
+    lvl_up = level_up_marker(level, data)
+    sp_marker = save_point_marker(drive_files, drive_lines, data)
     line2_parts = [
         f"  {hp_bar}{hp_marker}",
         f"{bld}LV {level}{rst} ({EXP_ICON} {exp}){lvl_up}{sp_marker}",

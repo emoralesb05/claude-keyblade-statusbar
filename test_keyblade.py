@@ -827,5 +827,73 @@ class TestWorldAndBranch(unittest.TestCase):
         self.assertEqual(branch, "")
 
 
+class TestAntiForm(unittest.TestCase):
+    def test_anti_form_low_hp_high_drive(self):
+        self.assertTrue(keyblade.is_anti_form(3, 50, 95))
+
+    def test_anti_form_low_mp(self):
+        self.assertTrue(keyblade.is_anti_form(80, 4, 10))
+
+    def test_no_anti_form_normal(self):
+        self.assertFalse(keyblade.is_anti_form(75, 75, 50))
+
+    def test_no_anti_form_low_hp_low_drive(self):
+        # HP is low but drive isn't high enough
+        self.assertFalse(keyblade.is_anti_form(3, 50, 50))
+
+    def test_anti_form_in_classic(self):
+        data = make_data()
+        data["context_window"]["remaining_percentage"] = 3
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_classic(data, config)
+        self.assertIn("Anti Form", output)
+
+    def test_anti_form_in_minimal(self):
+        data = make_data()
+        data["context_window"]["remaining_percentage"] = 3
+        config = dict(keyblade.DEFAULT_CONFIG)
+        output = keyblade.render_minimal(data, config)
+        self.assertIn("Anti", output)
+        # Minimal strips " Form" suffix
+        self.assertNotIn("Anti Form", output)
+
+
+class TestSavePoint(unittest.TestCase):
+    def setUp(self):
+        try:
+            os.remove(keyblade.SAVE_POINT_STATE_FILE)
+        except FileNotFoundError:
+            pass
+
+    def tearDown(self):
+        try:
+            os.remove(keyblade.SAVE_POINT_STATE_FILE)
+        except FileNotFoundError:
+            pass
+
+    def test_clean_tree_triggers_save_point(self):
+        result = keyblade.check_save_point(0, 0)
+        self.assertTrue(result)
+
+    def test_dirty_tree_no_save_point(self):
+        result = keyblade.check_save_point(5, 100)
+        self.assertFalse(result)
+
+    def test_save_point_marker_text(self):
+        marker = keyblade.save_point_marker(0, 0)
+        self.assertIn("SAVE POINT", marker)
+
+    def test_no_save_point_marker_when_dirty(self):
+        marker = keyblade.save_point_marker(5, 100)
+        self.assertEqual(marker, "")
+
+    def test_save_point_expires(self):
+        # Simulate an old save point
+        with open(keyblade.SAVE_POINT_STATE_FILE, "w") as f:
+            json.dump({"clean": True, "ts": 0}, f)
+        result = keyblade.check_save_point(0, 0)
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()

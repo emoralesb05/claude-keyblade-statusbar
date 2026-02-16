@@ -571,6 +571,65 @@ def level_up_marker(level):
     return ""
 
 
+SAVE_POINT_STATE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_savepoint_state.json")
+SAVE_POINT_DURATION = 10  # seconds to show save point notification
+
+
+def check_save_point(drive_files, drive_lines):
+    """Check if working tree just became clean. Returns True within notification window."""
+    is_clean = (drive_files == 0 and drive_lines == 0)
+    try:
+        with open(SAVE_POINT_STATE_FILE) as f:
+            state = json.load(f)
+        was_clean = state.get("clean", False)
+        saved_at = state.get("ts", 0)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        was_clean = False
+        saved_at = 0
+
+    now = time.time()
+
+    if is_clean and not was_clean:
+        # Tree just became clean — save state and show notification
+        try:
+            with open(SAVE_POINT_STATE_FILE, "w") as f:
+                json.dump({"clean": True, "ts": now}, f)
+        except OSError:
+            pass
+        return True
+
+    if is_clean and was_clean and (now - saved_at) < SAVE_POINT_DURATION:
+        # Still within notification window
+        return True
+
+    # Update state if changed
+    if is_clean != was_clean:
+        try:
+            with open(SAVE_POINT_STATE_FILE, "w") as f:
+                json.dump({"clean": is_clean, "ts": 0}, f)
+        except OSError:
+            pass
+
+    return False
+
+
+def save_point_marker(drive_files, drive_lines):
+    """Return Save Point badge if working tree just became clean."""
+    if check_save_point(drive_files, drive_lines):
+        return f" {ANSI['bright_green']}{ANSI['bold']}\u300cSAVE POINT\u300d{ANSI['reset']}"
+    return ""
+
+
+def is_anti_form(hp_pct, mp_pct, drive_pct):
+    """Check if Anti Form should activate (KH2 hidden penalty state).
+
+    Triggers when conditions are dire:
+    - HP < 5% AND Drive gauge > 90%, OR
+    - Context window (MP) < 5%
+    """
+    return (hp_pct < 5 and drive_pct > 90) or mp_pct < 5
+
+
 def resolve_effort_level(data, config=None):
     """Resolve raw effort level string.
 
@@ -673,7 +732,19 @@ def render_classic(data, config):
 
     kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
     mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
-    drive_color_name = resolve_drive_form_color_name(data, config)
+
+    # Drive data (needed for Anti Form + Save Point)
+    drive_files, drive_lines = calculate_drive(data, config)
+    drive_max = config.get("drive_max_lines", 500)
+    drive_pct = min(100.0, (drive_lines / drive_max * 100)) if drive_max > 0 else 0
+
+    # Anti Form check
+    if is_anti_form(hp_pct, mp_pct, drive_pct):
+        form_name = "Anti Form"
+        drive_color_name = "dim"
+    else:
+        form_name = resolve_drive_form(data, config)
+        drive_color_name = resolve_drive_form_color_name(data, config)
     dc = ANSI.get(drive_color_name, ANSI["yellow"])
 
     # Line 1: MP bar + Keyblade + World
@@ -686,16 +757,16 @@ def render_classic(data, config):
         line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
     line1 = "  ".join(line1_parts)
 
-    # Line 2: HP bar + Drive Form + Munny
+    # Line 2: HP bar + Save Point + Drive Form + Munny
     color_name = "green"
     if hp_pct <= 50:
         color_name = "bright_orange" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
-    line2_parts = [f"  {hp_bar}{hp_marker}"]
+    sp_marker = save_point_marker(drive_files, drive_lines)
+    line2_parts = [f"  {hp_bar}{hp_marker}{sp_marker}"]
     if config.get("show_drive_form", True):
-        form = resolve_drive_form(data, config)
-        line2_parts.append(f"{dc}{DRIVE_ICON} {form}{rst}")
+        line2_parts.append(f"{dc}{DRIVE_ICON} {form_name}{rst}")
     if config.get("show_munny", True):
         line2_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
     line2 = "  ".join(line2_parts)
@@ -726,19 +797,30 @@ def render_minimal(data, config):
     bld = ANSI["bold"]
     dim = ANSI["dim"]
 
+    # Drive data (needed for Anti Form + Save Point)
+    drive_files, drive_lines = calculate_drive(data, config)
+    drive_max = config.get("drive_max_lines", 500)
+    drive_pct = min(100.0, (drive_lines / drive_max * 100)) if drive_max > 0 else 0
+
     hc = hp_color(hp_pct)
     hp_str = f"{hc}{bld}{hp_pct:.0f}%{rst}" if hp_pct <= 20 else f"{hc}{hp_pct:.0f}%{rst}"
     hp_str += hp_danger_marker(hp_pct)
+    hp_str += save_point_marker(drive_files, drive_lines)
 
-    drive_color_name = resolve_drive_form_color_name(data, config)
+    # Anti Form check
+    if is_anti_form(hp_pct, mp_pct, drive_pct):
+        form_name = "Anti Form"
+        drive_color_name = "dim"
+    else:
+        form_name = resolve_drive_form(data, config)
+        drive_color_name = resolve_drive_form_color_name(data, config)
     dc = ANSI.get(drive_color_name, ANSI["yellow"])
 
     parts = [f"{kc}{KEYBLADE_ICON}  {keyblade}{rst}"]
 
     if config.get("show_drive_form", True):
-        form = resolve_drive_form(data, config)
         # Strip " Form" suffix for compact display
-        short_form = form.replace(" Form", "")
+        short_form = form_name.replace(" Form", "")
         parts.append(f"{dc}{DRIVE_ICON} {short_form}{rst}")
 
     if config.get("show_world", True):
@@ -793,21 +875,21 @@ def render_full_rpg(data, config):
     line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
     line1 = "  ".join(line1_parts)
 
-    # Line 2: HP bar + Level + EXP + Level-Up
+    # Line 2: HP bar + Level + EXP + Level-Up + Save Point
     color_name = "green"
     if hp_pct <= 50:
         color_name = "bright_orange" if hp_pct > 20 else "red"
     hp_bar = render_bar(f"{HEART_ICON} HP", hp_pct, 20, color_name)
     hp_marker = hp_danger_marker(hp_pct)
     lvl_up = level_up_marker(level)
+    sp_marker = save_point_marker(drive_files, drive_lines)
     line2_parts = [
         f"  {hp_bar}{hp_marker}",
-        f"{bld}LV {level}{rst} ({EXP_ICON} {exp}){lvl_up}",
+        f"{bld}LV {level}{rst} ({EXP_ICON} {exp}){lvl_up}{sp_marker}",
     ]
     line2 = "  ".join(line2_parts)
 
     # Line 3: Drive (uncommitted bar) + Munny + Timer + Party
-    drive_color_name = resolve_drive_form_color_name(data, config)
     drive_width = config.get("drive_bar_width", 10)
     line3_parts = []
     if config.get("show_drive", True):
@@ -820,7 +902,16 @@ def render_full_rpg(data, config):
         else:
             drive_val = drive_lines
         drive_pct = min(100.0, (drive_val / drive_max * 100)) if drive_max > 0 else 0
-        form_name = resolve_drive_form(data, config) if config.get("show_drive_form", True) else "Drive"
+        # Anti Form check
+        if is_anti_form(hp_pct, mp_pct, drive_pct):
+            form_name = "Anti Form"
+            drive_color_name = "dim"
+        elif config.get("show_drive_form", True):
+            form_name = resolve_drive_form(data, config)
+            drive_color_name = resolve_drive_form_color_name(data, config)
+        else:
+            form_name = "Drive"
+            drive_color_name = resolve_drive_form_color_name(data, config)
         drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color_name)
         line3_parts.append(f"  {drive_bar}")
 

@@ -184,6 +184,7 @@ def load_config():
     return config
 
 
+
 # ─── Data Helpers ────────────────────────────────────────────────
 
 USAGE_CACHE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_usage_cache.json")
@@ -301,6 +302,37 @@ def calculate_mp(data):
     return data.get("context_window", {}).get("remaining_percentage", 100) or 100
 
 
+def world_and_branch(data, config=None):
+    """Return (world_name, branch) separately for responsive display."""
+    if config is None:
+        config = DEFAULT_CONFIG
+    fallback = config.get("world_fallback", "Traverse Town")
+    ws = data.get("workspace", {})
+    current = ws.get("current_dir", "") or ws.get("project_dir", "")
+    if not current:
+        return fallback, ""
+    dirname = os.path.basename(current)
+    if not dirname:
+        return fallback, ""
+
+    # Apply world_map: custom name for this directory
+    wmap = config.get("world_map", {})
+    name = wmap.get(dirname, dirname)
+
+    branch = ""
+    try:
+        if config.get("show_branch", True):
+            r = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=current, timeout=3,
+            )
+            branch = r.stdout.strip() if r.returncode == 0 else ""
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return name, branch
+
+
 def world_name(data, config=None):
     """Convert workspace directory to world name with git branch.
 
@@ -309,34 +341,11 @@ def world_name(data, config=None):
       world_fallback — name when no directory found
       world_map      — map directory names to custom names
     """
-    if config is None:
-        config = DEFAULT_CONFIG
-    fallback = config.get("world_fallback", "Traverse Town")
-    ws = data.get("workspace", {})
-    current = ws.get("current_dir", "") or ws.get("project_dir", "")
-    if not current:
-        return fallback
-    dirname = os.path.basename(current)
-    if not dirname:
-        return fallback
-
-    # Apply world_map: custom name for this directory
-    wmap = config.get("world_map", {})
-    name = wmap.get(dirname, dirname)
-
-    try:
-        if config.get("show_branch", True):
-            r = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, cwd=current, timeout=3,
-            )
-            branch = r.stdout.strip() if r.returncode == 0 else ""
-            if branch:
-                name = f"{name} \u2219 {branch}"
-    except (subprocess.SubprocessError, OSError):
-        pass
-
+    name, branch = world_and_branch(data, config)
+    if branch:
+        return f"{name} \u2219 {branch}"
     return name
+
 
 
 def format_duration(ms):
@@ -662,7 +671,6 @@ def render_classic(data, config):
     rst = ANSI["reset"]
     bld = ANSI["bold"]
 
-    colors = config.get("colors", DEFAULT_CONFIG["colors"])
     kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
     mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
     drive_color_name = resolve_drive_form_color_name(data, config)
@@ -785,7 +793,7 @@ def render_full_rpg(data, config):
     line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
     line1 = "  ".join(line1_parts)
 
-    # Line 2: HP bar (with tick marks) + Level + EXP + Level-Up
+    # Line 2: HP bar + Level + EXP + Level-Up
     color_name = "green"
     if hp_pct <= 50:
         color_name = "bright_orange" if hp_pct > 20 else "red"
@@ -800,6 +808,7 @@ def render_full_rpg(data, config):
 
     # Line 3: Drive (uncommitted bar) + Munny + Timer + Party
     drive_color_name = resolve_drive_form_color_name(data, config)
+    drive_width = config.get("drive_bar_width", 10)
     line3_parts = []
     if config.get("show_drive", True):
         drive_max = config.get("drive_max_lines", 500)
@@ -811,7 +820,6 @@ def render_full_rpg(data, config):
         else:
             drive_val = drive_lines
         drive_pct = min(100.0, (drive_val / drive_max * 100)) if drive_max > 0 else 0
-        drive_width = config.get("drive_bar_width", 10)
         form_name = resolve_drive_form(data, config) if config.get("show_drive_form", True) else "Drive"
         drive_bar = render_bar(f"{DRIVE_ICON} {form_name}", drive_pct, drive_width, drive_color_name)
         line3_parts.append(f"  {drive_bar}")

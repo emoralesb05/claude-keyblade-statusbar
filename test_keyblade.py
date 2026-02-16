@@ -817,5 +817,15 @@ class TestLevelUp(unittest.TestCase):
         self.assertIn("LEVEL UP!", marker)
 
 
+class TestWorldAndBranch(unittest.TestCase):
+    def test_world_branch_split(self):
+        data = make_data()
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config["show_branch"] = False
+        name, branch = keyblade.world_and_branch(data, config)
+        self.assertEqual(name, "myapp")
+        self.assertEqual(branch, "")
+
+
 if __name__ == "__main__":
     unittest.main()

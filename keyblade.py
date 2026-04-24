@@ -40,13 +40,15 @@ DEFAULT_CONFIG = {
     "drive_form_names": {
         "low": "Valor Form",
         "medium": "Wisdom Form",
-        "high": "Master Form",
+        "high": "Limit Form",
+        "xhigh": "Master Form",
         "max": "Final Form",
     },
     "drive_form_colors": {
         "low": "red",
         "medium": "blue",
-        "high": "bright_yellow",
+        "high": "bright_cyan",
+        "xhigh": "bright_yellow",
         "max": "bright_white",
     },
     "world_fallback": "Traverse Town",
@@ -713,7 +715,12 @@ def resolve_effort_level(data, config=None):
     if not effort:
         effort = "high"
 
-    return effort.lower()
+    # Claude Code v2.1+ wraps effort as {"level": "..."}; older versions
+    # and settings.json still use a plain string.
+    if isinstance(effort, dict):
+        effort = effort.get("level") or "high"
+
+    return str(effort).lower()
 
 
 def resolve_drive_form(data, config=None):

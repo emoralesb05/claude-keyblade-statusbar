@@ -26,13 +26,15 @@
   "drive_form_names": {
     "low": "Valor Form",
     "medium": "Wisdom Form",
-    "high": "Master Form",
+    "high": "Limit Form",
+    "xhigh": "Master Form",
     "max": "Final Form"
   },
   "drive_form_colors": {
     "low": "red",
     "medium": "blue",
-    "high": "bright_yellow",
+    "high": "bright_cyan",
+    "xhigh": "bright_yellow",
     "max": "bright_white"
   },
   "world_fallback": "Traverse Town",

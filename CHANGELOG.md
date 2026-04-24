@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Fixed HP flashing to 100% on session start and after `/clear` when the plan-usage token lookup or API call transiently failed — now falls back to the last-known cached value.
+- Fixed MP not moving after `/compact` — MP is now read directly from the transcript file (using `message.usage` token counts and `isCompactSummary` markers) rather than the statusline payload, which lags one turn behind.
+
 ## 1.0.1
 
 - Added `xhigh` drive form tier — "Limit Form" now sits at `high`, "Master Form" moved up to `xhigh`.

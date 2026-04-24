@@ -321,7 +321,7 @@ def get_plan_usage(config):
                 except (FileNotFoundError, json.JSONDecodeError, KeyError):
                     continue
         if not token:
-            return 0, 0
+            raise ValueError("no OAuth token available")
 
         # Call usage API
         req = urllib.request.Request(
@@ -345,7 +345,13 @@ def get_plan_usage(config):
         return five_hour, seven_day
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError,
             KeyError, ValueError, urllib.error.URLError):
-        return 0, 0
+        pass
+
+    # Token lookup or API call failed — prefer last known values over 0%
+    # (a fresh 0% would render as 100% HP, flashing full on session start).
+    if cache:
+        return cache.get("five_hour", 0), cache.get("seven_day", 0)
+    return 0, 0
 
 
 def calculate_hp(data, config):
@@ -373,9 +379,92 @@ def calculate_hp(data, config):
     return max(0.0, min(100.0, 100.0 - five_hour))
 
 
+def _read_transcript_context_tokens(transcript_path):
+    """Derive current context token count by scanning the transcript tail.
+
+    Claude Code's statusline payload lags one turn behind after /compact and
+    may be missing on session start / after /clear. The transcript file is
+    the source of truth: the most recent assistant `message.usage` gives the
+    real input-token count, and an `isCompactSummary` line marks when /compact
+    reset the context.
+
+    Returns total tokens or None if unreadable.
+    """
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return None
+            read_size = min(size, 512 * 1024)
+            f.seek(size - read_size)
+            tail = f.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+
+    lines = [l for l in tail.split("\n") if l.strip()]
+    last_usage_tokens = None
+    last_usage_idx = -1
+    last_compact_idx = -1
+    last_compact_obj = None
+
+    for idx, line in enumerate(lines):
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if obj.get("isCompactSummary"):
+            last_compact_idx = idx
+            last_compact_obj = obj
+        msg = obj.get("message")
+        if isinstance(msg, dict):
+            u = msg.get("usage")
+            if isinstance(u, dict):
+                tok = (
+                    (u.get("input_tokens") or 0)
+                    + (u.get("cache_read_input_tokens") or 0)
+                    + (u.get("cache_creation_input_tokens") or 0)
+                )
+                if tok > 0:
+                    last_usage_tokens = tok
+                    last_usage_idx = idx
+
+    # Compact marker more recent than the last usage → /compact just ran and
+    # the user hasn't taken a turn yet. Estimate from the summary content size.
+    if last_compact_obj is not None and last_compact_idx > last_usage_idx:
+        content = last_compact_obj.get("message", {}).get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for c in content:
+                if isinstance(c, dict):
+                    parts.append(c.get("text", "") or "")
+                else:
+                    parts.append(str(c))
+            content = "".join(parts)
+        # Rough chars-per-token ≈ 4. Floor at 1000 to avoid absurdly-low reads.
+        return max(1000, len(content) // 4)
+
+    return last_usage_tokens
+
+
 def calculate_mp(data):
-    """Calculate MP from context window remaining percentage."""
-    return data.get("context_window", {}).get("remaining_percentage", 100) or 100
+    """Calculate MP from context window remaining percentage.
+
+    Prefers scanning the transcript file because the `context_window` field
+    in the statusline payload is stale on session start, after /clear, and
+    for one turn after /compact.
+    """
+    ctx = data.get("context_window", {}) or {}
+    window_size = ctx.get("context_window_size") or 200_000
+
+    transcript_path = data.get("transcript_path")
+    if transcript_path:
+        tokens = _read_transcript_context_tokens(transcript_path)
+        if tokens is not None and window_size > 0:
+            used_pct = min(100.0, tokens / window_size * 100.0)
+            return max(0.0, 100.0 - used_pct)
+
+    return ctx.get("remaining_percentage", 100) or 100
 
 
 def world_and_branch(data, config=None):

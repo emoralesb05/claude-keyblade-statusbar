@@ -425,10 +425,10 @@ class TestResolveDriveForm(unittest.TestCase):
         elif "CLAUDE_CONFIG_DIR" in os.environ:
             del os.environ["CLAUDE_CONFIG_DIR"]
 
-    def test_default_is_master_form(self):
+    def test_default_is_limit_form(self):
         data = make_data()
         result = keyblade.resolve_drive_form(data)
-        self.assertEqual(result, "Master Form")
+        self.assertEqual(result, "Limit Form")
 
     def test_low_effort_from_env(self):
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
@@ -444,6 +444,12 @@ class TestResolveDriveForm(unittest.TestCase):
 
     def test_high_effort_from_env(self):
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "high"
+        data = make_data()
+        result = keyblade.resolve_drive_form(data)
+        self.assertEqual(result, "Limit Form")
+
+    def test_xhigh_effort_from_env(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "xhigh"
         data = make_data()
         result = keyblade.resolve_drive_form(data)
         self.assertEqual(result, "Master Form")
@@ -483,7 +489,7 @@ class TestResolveDriveForm(unittest.TestCase):
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "turbo"
         data = make_data()
         result = keyblade.resolve_drive_form(data)
-        self.assertEqual(result, "Master Form")
+        self.assertEqual(result, "Limit Form")
 
 
 class TestDriveFormInThemes(unittest.TestCase):
@@ -605,7 +611,12 @@ class TestDriveFormColorName(unittest.TestCase):
         data = make_data()
         self.assertEqual(keyblade.resolve_drive_form_color_name(data), "blue")
 
-    def test_high_is_bright_yellow(self):
+    def test_high_is_bright_cyan(self):
+        data = make_data()
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "bright_cyan")
+
+    def test_xhigh_is_bright_yellow(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "xhigh"
         data = make_data()
         self.assertEqual(keyblade.resolve_drive_form_color_name(data), "bright_yellow")
 

@@ -11,37 +11,14 @@ echo ""
 echo "  === keyblade uninstaller ==="
 echo ""
 
-# Restore statusLine backup in settings.json
-if [ -f "$SETTINGS" ]; then
-  python3 -c "
-import json, os
+# Remove statusLine + subagentStatusLine from settings.json, restoring backups.
+# Prefer the keyblade.py next to this script (Homebrew runs it from libexec).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KEYBLADE_PY="$SCRIPT_DIR/keyblade.py"
+[ -f "$KEYBLADE_PY" ] || KEYBLADE_PY="$INSTALL_DIR/keyblade.py"
 
-settings_path = '$SETTINGS'
-with open(settings_path) as f:
-    settings = json.load(f)
-
-sl = settings.get('statusLine', {})
-is_keyblade = False
-if isinstance(sl, dict):
-    is_keyblade = 'keyblade' in sl.get('command', '')
-
-if is_keyblade:
-    backup = settings.pop('_statusLine_backup', None)
-    if backup:
-        settings['statusLine'] = backup
-        print('  Restored previous statusLine')
-    else:
-        del settings['statusLine']
-        print('  Removed statusLine entry')
-else:
-    print('  StatusLine is not keyblade, leaving untouched')
-
-settings.pop('_statusLine_backup', None)
-
-with open(settings_path, 'w') as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-"
+if [ -f "$SETTINGS" ] && [ -f "$KEYBLADE_PY" ]; then
+  python3 "$KEYBLADE_PY" --unregister-settings "$SETTINGS"
 fi
 
 # Remove skills

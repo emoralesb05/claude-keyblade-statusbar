@@ -1,28 +1,46 @@
 #!/usr/bin/env python3
-"""keyblade.py — Kingdom Hearts themed statusline for Claude Code."""
+"""keyblade.py — Kingdom Hearts themed statusline for Claude Code.
 
+Modes:
+  keyblade.py                                  statusline (Claude Code JSON on stdin)
+  keyblade.py --party                          subagent rows for `subagentStatusLine`
+  keyblade.py --preview [theme ...] [--width N] render sample scenarios in this terminal
+  keyblade.py --register-settings SETTINGS [SCRIPT]
+  keyblade.py --unregister-settings SETTINGS
+"""
+
+import hashlib
 import json
 import math
 import os
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
+import unicodedata
+from urllib.parse import quote
 
 # ─── Configuration ───────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
     "theme": "classic",
     "color_mode": "auto",
-    "hp_source": "5_hour",
+    "responsive": True,
+    "hyperlinks": True,
+    "hp_source": "auto",
     "hp_budget_usd": 5.00,
-    "hp_usage_cache_ttl": 60,
+    "show_hp_reset": True,
+    "show_auth": True,
+    "auth_cache_ttl": 600,
     "show_drive": True,
-    "drive_max_lines": 500,
+    "drive_max_lines": 1000,
     "drive_source": "lines",
-    "drive_bar_width": 14,
+    "drive_bar_width": 10,
     "drive_include_untracked": True,
+    "git_cache_ttl": 5,
     "level_per": 100,
     "level_curve": "linear",
     "level_max": 99,
@@ -31,11 +49,20 @@ DEFAULT_CONFIG = {
         "opus": "Ultima Weapon",
         "sonnet": "Oathkeeper",
         "haiku": "Kingdom Key",
+        "fable": "Sweet Memories",
     },
     "show_munny": True,
     "show_world": True,
     "show_branch": True,
+    "show_pr": True,
+    "show_worktree": True,
     "show_timer": True,
+    "show_focus": True,
+    "show_session_name": True,
+    "show_fast_mode": True,
+    "show_party": True,
+    "show_vim_mode": False,
+    "party_panel": True,
     "show_drive_form": True,
     "drive_form_names": {
         "low": "Valor Form",
@@ -64,7 +91,9 @@ DEFAULT_CONFIG = {
 
 # ─── ANSI Color Helpers ─────────────────────────────────────────
 
-# Basic 16-color ANSI (maximum compatibility)
+# Basic 16-color ANSI (maximum compatibility). No bar-track backgrounds here:
+# a solid 16-color background is indistinguishable from the bar fill, so bars
+# fall back to a dim ░ track in this mode.
 ANSI_BASIC = {
     "reset": "\033[0m",
     "bold": "\033[1m",
@@ -82,16 +111,6 @@ ANSI_BASIC = {
     "bright_yellow": "\033[93m",
     "bright_white": "\033[97m",
     "bright_orange": "\033[38;5;208m",
-    # Background colors for bar tracks (basic: just use dim)
-    "bg_green": "\033[42m",
-    "bg_blue": "\033[44m",
-    "bg_red": "\033[41m",
-    "bg_magenta": "\033[45m",
-    "bg_yellow": "\033[43m",
-    "bg_bright_yellow": "\033[43m",
-    "bg_bright_white": "\033[47m",
-    "bg_bright_orange": "\033[43m",
-    "bg_dim": "\033[100m",
     # Frame color
     "frame": "\033[90m",
     # Icon-specific colors
@@ -120,9 +139,14 @@ ANSI_TRUECOLOR = {
     # Background colors for bar tracks (darkened versions of foreground)
     "bg_green": "\033[48;2;35;50;20m",        # dark KH green
     "bg_blue": "\033[48;2;8;25;55m",          # dark KH blue
+    "bg_cyan": "\033[48;2;20;45;50m",         # dark KH cyan
     "bg_red": "\033[48;2;55;20;15m",          # dark KH red
     "bg_magenta": "\033[48;2;50;35;45m",      # dark KH pink
     "bg_yellow": "\033[48;2;60;50;18m",       # dark KH gold
+    "bg_white": "\033[48;2;40;40;45m",        # dark soft white
+    "bg_bright_green": "\033[48;2;38;55;22m", # dark bright green
+    "bg_bright_blue": "\033[48;2;12;30;55m",  # dark Wisdom Form blue
+    "bg_bright_cyan": "\033[48;2;25;50;55m",  # dark Limit Form cyan
     "bg_bright_yellow": "\033[48;2;60;50;18m",# dark Master Form gold
     "bg_bright_white": "\033[48;2;40;40;45m", # dark Final Form
     "bg_bright_orange": "\033[48;2;60;38;12m",# dark HP warning amber
@@ -165,21 +189,27 @@ ANSI = _resolve_ansi()
 
 # ─── Unicode Constants ───────────────────────────────────────────
 
-BAR_FULL = "\u2588"    # █ Full block
-BAR_EMPTY = "\u2591"   # ░ Light shade (visible empty track)
-BAR_BLOCKS = [" ", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "\u2589", "\u2588"]
+BAR_FULL = "█"    # █ Full block
+BAR_EMPTY = "░"   # ░ Light shade (visible empty track)
+BAR_BLOCKS = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
 #              0/8    1/8       2/8       3/8       4/8       5/8       6/8       7/8       8/8
 
 KEYBLADE_ICON = "\U0001f5dd"  # 🗝 Old key — keyblades are keys, not swords
-MUNNY_ICON = "\u25c9"         # ◉ Fisheye — munny orbs are round jewels
-HEART_ICON = "\u2665"         # ♥ Heart — hearts are core KH
-MP_ICON = "\u2727"            # ✧ White four-pointed star — magic sparkle
-WORLD_ICON = "\u2726"         # ✦ Four-pointed star — worlds glow on the world map
-TIMER_ICON = "\u23f1"         # ⏱ Stopwatch — session/journey timer
-DRIVE_ICON = "\u25c6"         # ◆ Diamond — the in-game Drive gauge shape
-FORM_ICON = "\u2736"          # ✶ Six-pointed star — Drive Form transformation aura
-EXP_ICON = "\u265b"           # ♛ Crown — Sora's crown necklace
-PARTY_ICON = "\u2666"         # ♦ Diamond suit — party member indicator
+MUNNY_ICON = "◉"         # ◉ Fisheye — munny orbs are round jewels
+HEART_ICON = "♥"         # ♥ Heart — hearts are core KH
+MP_ICON = "✧"            # ✧ White four-pointed star — magic sparkle
+WORLD_ICON = "✦"         # ✦ Four-pointed star — worlds glow on the world map
+TIMER_ICON = "⏱"         # ⏱ Stopwatch — session/journey timer
+DRIVE_ICON = "◆"         # ◆ Diamond — the in-game Drive gauge shape
+FORM_ICON = "✶"          # ✶ Six-pointed star — Drive Form transformation aura
+EXP_ICON = "♛"           # ♛ Crown — Sora's crown necklace
+PARTY_ICON = "♦"         # ♦ Diamond suit — party member indicator
+AUTH_ICON = "◈"          # ◈ Diamond in diamond — the gummi you flew in on (auth)
+CURE_ICON = "✚"          # ✚ Cure — countdown until the HP window refills
+FOCUS_ICON = "◎"         # ◎ Bullseye — KH3 Focus gauge (prompt cache)
+JOURNAL_ICON = "✎"       # ✎ Pencil — Jiminy's Journal entry (session name)
+HASTE_ICON = "⚡"         # ⚡ High voltage — fast mode
+WORKTREE_ICON = "⎇"      # ⎇ Branching path — an alternate world (git worktree)
 
 
 # ─── Config Loading ──────────────────────────────────────────────
@@ -217,35 +247,72 @@ def load_config():
     return config
 
 
+def _claude_settings():
+    """Read Claude Code's settings.json (effortLevel, apiKeyHelper, ...)."""
+    config_dir = os.environ.get(
+        "CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")
+    )
+    try:
+        with open(os.path.join(config_dir, "settings.json")) as f:
+            settings = json.load(f)
+        return settings if isinstance(settings, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
 
 # ─── State File ──────────────────────────────────────────────────
 
-STATE_FILE = os.path.join(tempfile.gettempdir(), "keyblade_state.json")
+STATE_FILE = os.environ.get("KEYBLADE_STATE_FILE") or os.path.join(
+    tempfile.gettempdir(), "keyblade_state.json"
+)
+GIT_CACHE_DIR = tempfile.gettempdir()
+
+
+def _atomic_write_json(path, obj):
+    """Write JSON via temp file + rename so concurrent readers never see a
+    torn file (every open session shares the state file)."""
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".keyblade.")
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except OSError:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _read_state():
     """Read the shared state file. Returns dict."""
     try:
         with open(STATE_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
         return {}
 
 
 def _write_state(state):
     """Write the shared state file."""
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except OSError:
-        pass
+    _atomic_write_json(STATE_FILE, state)
+
+
+def _prune(entries, keep=20):
+    """Keep the `keep` most recently stamped entries of a {key: {"ts": ...}} map."""
+    if len(entries) <= keep:
+        return entries
+    def stamp(item):
+        value = item[1]
+        return value.get("ts", 0) if isinstance(value, dict) else 0
+    return dict(sorted(entries.items(), key=stamp, reverse=True)[:keep])
 
 
 def _project_key(data):
-    """Get project directory name for keying per-project state."""
-    ws = data.get("workspace", {})
-    d = ws.get("current_dir", "") or ws.get("project_dir", "")
-    return os.path.basename(d) if d else "_default"
+    """Key per-project state by the full workspace path (basenames collide)."""
+    return _work_dir(data) or "_default"
 
 
 def _read_project_state(data):
@@ -265,119 +332,461 @@ def _write_project_state(data, project_state):
     _write_state(state)
 
 
+# ─── Text Helpers ────────────────────────────────────────────────
+
+_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+RIGHT_MARGIN = 4  # columns left free for notifications that share the row
+
+
+def visible_width(text):
+    """Terminal columns `text` occupies: escape codes are free, wide chars take two."""
+    width = 0
+    for ch in _ESCAPE_RE.sub("", text):
+        if unicodedata.combining(ch) or ch in "‍︎️":
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def clean_text(text):
+    """Strip control characters from payload text before it reaches the terminal."""
+    return _CONTROL_RE.sub("", str(text or ""))
+
+
+def truncate(text, width):
+    """Shorten plain text to `width` columns, ending with an ellipsis."""
+    if visible_width(text) <= width:
+        return text
+    out, used = "", 0
+    for ch in text:
+        w = visible_width(ch)
+        if used + w > width - 1:
+            break
+        out += ch
+        used += w
+    return out + "…"
+
+
+def hyperlink(text, url, config=None):
+    """Wrap text in an OSC 8 link (Cmd/Ctrl+click) when hyperlinks are enabled."""
+    if config is None:
+        config = DEFAULT_CONFIG
+    url = clean_text(url)
+    if not url or not config.get("hyperlinks", True):
+        return text
+    return f"\033]8;;{url}\a{text}\033]8;;\a"
+
+
+def format_countdown(seconds):
+    """Format seconds until a reset as a compact countdown (3d4h, 2h05m, 12m)."""
+    s = max(0, int(seconds))
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m" if minutes else "<1m"
+
+
+def line_budget(config):
+    """Usable columns for one statusline row, or None when unknown.
+
+    Claude Code captures the script's output, so tput can't see the terminal;
+    it sets COLUMNS instead. Leave a margin for notifications sharing the row.
+    """
+    if not config.get("responsive", True):
+        return None
+    try:
+        cols = int(os.environ.get("COLUMNS", ""))
+    except ValueError:
+        return None
+    if cols <= 0:
+        return None
+    return max(20, cols - RIGHT_MARGIN)
+
+
+def fit_segments(segments, width, prefix="  "):
+    """Join segments into one line, dropping the least important until it fits.
+
+    Each segment is (priority, text) or (priority, text, separator); the
+    separator (default two spaces) goes before the segment. Higher priority
+    numbers drop first, rightmost first among equals; priority 0 never drops.
+    """
+    segs = [(s[0], s[1], s[2] if len(s) > 2 else "  ") for s in segments if s[1]]
+
+    def join(items):
+        return prefix + "".join(
+            (sep if i else "") + text for i, (_, text, sep) in enumerate(items)
+        )
+
+    line = join(segs)
+    while width is not None and visible_width(line) > width:
+        droppable = [i for i, s in enumerate(segs) if s[0] > 0]
+        if not droppable:
+            break
+        del segs[max(droppable, key=lambda i: (segs[i][0], i))]
+        line = join(segs)
+    return line
+
+
+def bar_widths(budget):
+    """(MP, HP) bar widths for the available line width."""
+    if budget is None or budget >= 96:
+        return 16, 24
+    if budget >= 72:
+        return 12, 16
+    return 8, 10
+
+
 # ─── Data Helpers ────────────────────────────────────────────────
+
+def _work_dir(data):
+    """Current workspace directory from the payload."""
+    ws = data.get("workspace") or {}
+    return ws.get("current_dir") or ws.get("project_dir") or data.get("cwd") or ""
+
+
+def _cc_version(data):
+    """Claude Code (major, minor) from the payload, or None."""
+    m = re.match(r"(\d+)\.(\d+)", str(data.get("version") or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _clamp(pct):
+    return max(0.0, min(100.0, float(pct)))
 
 
 def resolve_keyblade(model_id, model_display, config):
-    """Map model to KH keyblade name."""
+    """Map model to KH keyblade name (any keyblade_names key found in the model)."""
     names = config.get("keyblade_names", DEFAULT_CONFIG["keyblade_names"])
     model_lower = ((model_id or "") + " " + (model_display or "")).lower()
-    if "opus" in model_lower:
-        return names.get("opus", "Ultima Weapon")
-    if "sonnet" in model_lower:
-        return names.get("sonnet", "Oathkeeper")
-    if "haiku" in model_lower:
-        return names.get("haiku", "Kingdom Key")
+    for family, blade in names.items():
+        if family and family.lower() in model_lower:
+            return blade
     return "Starlight"
 
 
-def get_plan_usage(config):
-    """Fetch plan usage from Anthropic API with file-based caching."""
-    ttl = config.get("hp_usage_cache_ttl", 60)
+# ─── Auth ────────────────────────────────────────────────────────
 
-    # Check cache first
-    state = _read_state()
-    cache = state.get("usage_cache", {})
-    if time.time() - cache.get("ts", 0) < ttl:
-        return cache.get("five_hour", 0), cache.get("seven_day", 0)
+# Env vars that decide how Claude Code authenticates. Only their presence is
+# fingerprinted — values never leave the environment.
+AUTH_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_BASE_URL",
+)
+AUTH_ENV_PROVIDERS = (
+    ("CLAUDE_CODE_USE_BEDROCK", "bedrock"),
+    ("CLAUDE_CODE_USE_VERTEX", "vertex"),
+    ("CLAUDE_CODE_USE_FOUNDRY", "foundry"),
+)
+PROVIDER_LABELS = {
+    "bedrock": "Bedrock",
+    "vertex": "Vertex",
+    "foundry": "Foundry",
+    "anthropicAws": "AWS",
+    "anthropicGoogleCloud": "Google Cloud",
+    "mantle": "Mantle",
+    "gateway": "Gateway",
+}
+AUTH_REFRESH_BACKOFF = 15  # seconds before re-spawning a refresh that hasn't landed
 
-    # Extract OAuth token — macOS Keychain or Linux credential file
+
+def _truthy_env(name):
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _auth_fingerprint():
+    """Cache key for auth: sessions launched with the same auth env (and config
+    dir) authenticate the same way, so /clear doesn't start from scratch."""
+    parts = [f"{v}={'1' if os.environ.get(v) else ''}" for v in AUTH_ENV_VARS]
+    parts.append(os.environ.get("CLAUDE_CONFIG_DIR", ""))
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+
+
+def _claude_executable():
+    """Path to the running Claude Code binary, falling back to `claude` on PATH."""
+    exe = os.environ.get("CLAUDE_CODE_EXECPATH", "")
+    if (exe and os.path.basename(exe).lower() not in ("node", "node.exe", "bun", "bun.exe")
+            and os.access(exe, os.X_OK)):
+        return exe
+    return shutil.which("claude")
+
+
+def _run_auth_status():
+    """Ask Claude Code how it authenticates (`claude auth status --json`).
+
+    Keeps only non-identifying fields (no email or org). None on failure.
+    """
+    exe = _claude_executable()
+    if not exe:
+        return None
     try:
-        token = ""
-        if sys.platform == "darwin":
-            r = subprocess.run(
-                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0:
-                creds = json.loads(r.stdout.strip())
-                token = creds.get("claudeAiOauth", {}).get("accessToken", "")
-        else:
-            # Linux: try reading from Claude Code credential store
-            cred_paths = [
-                os.path.expanduser("~/.claude/credentials.json"),
-                os.path.join(
-                    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-                    "claude-code", "credentials.json",
-                ),
-            ]
-            for cred_path in cred_paths:
-                try:
-                    with open(cred_path) as f:
-                        creds = json.load(f)
-                    token = creds.get("claudeAiOauth", {}).get("accessToken", "")
-                    if token:
-                        break
-                except (FileNotFoundError, json.JSONDecodeError, KeyError):
-                    continue
-        if not token:
-            raise ValueError("no OAuth token available")
-
-        # Call usage API
-        req = urllib.request.Request(
-            "https://api.anthropic.com/api/oauth/usage",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
+        r = subprocess.run(
+            [exe, "auth", "status", "--json"],
+            capture_output=True, text=True, timeout=10,
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            body = json.loads(resp.read())
+        body = json.loads(r.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    keep = ("loggedIn", "authMethod", "apiProvider", "apiKeySource", "subscriptionType")
+    return {k: body[k] for k in keep if body.get(k) is not None}
 
-        five_hour = body.get("five_hour", {}).get("utilization", 0) or 0
-        seven_day = body.get("seven_day", {}).get("utilization", 0) or 0
 
-        # Write cache
-        state = _read_state()
-        state["usage_cache"] = {"ts": time.time(), "five_hour": five_hour, "seven_day": seven_day}
-        _write_state(state)
+def _auth_from_env():
+    """Best-effort guess from the environment while `claude auth status` is
+    unavailable or still running."""
+    for var, provider in AUTH_ENV_PROVIDERS:
+        if _truthy_env(var):
+            return {"apiProvider": provider}
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return {"authMethod": "api_key", "apiProvider": "firstParty"}
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return {"authMethod": "oauth_token", "apiProvider": "firstParty"}
+    if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        return {"authMethod": "auth_token", "apiProvider": "firstParty"}
+    if _claude_settings().get("apiKeyHelper"):
+        return {"authMethod": "api_key_helper", "apiProvider": "firstParty"}
+    return None
 
-        return five_hour, seven_day
-    except (subprocess.SubprocessError, OSError, json.JSONDecodeError,
-            KeyError, ValueError, urllib.error.URLError):
+
+def refresh_auth(key, ttl=None):
+    """Run `claude auth status` and cache the result under `key`.
+
+    Runs in a detached child (see _spawn_auth_refresh). On failure the entry
+    keeps its previous status and retries in about a minute.
+    """
+    if ttl is None:
+        ttl = DEFAULT_CONFIG["auth_cache_ttl"]
+    status = _run_auth_status()
+    state = _read_state()
+    cache = state.get("auth_cache") or {}
+    entry = cache.get(key) if isinstance(cache.get(key), dict) else {}
+    now = time.time()
+    if status is not None:
+        entry = {"ts": now, "status": status}
+    else:
+        entry = {"ts": now - max(0, ttl - 60), "status": entry.get("status")}
+    cache[key] = entry
+    state["auth_cache"] = _prune(cache)
+    _write_state(state)
+    return entry
+
+
+def _spawn_auth_refresh(key, ttl):
+    """Refresh auth in a detached child so a render never waits ~0.3s on it
+    (Claude Code cancels a statusline that's still running when the next
+    update arrives)."""
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--refresh-auth", key, str(ttl)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError:
         pass
 
-    # Token lookup or API call failed — prefer last known values over 0%
-    # (a fresh 0% would render as 100% HP, flashing full on session start).
-    if cache:
-        return cache.get("five_hour", 0), cache.get("seven_day", 0)
-    return 0, 0
+
+def resolve_auth(data, config=None):
+    """How this session authenticates: {"method", "provider", "plan"}.
+
+    `claude auth status` is authoritative; it's cached per auth environment
+    and refreshed in the background (stale-while-revalidate). Until the first
+    answer lands, the environment gives a best-effort guess. A payload carrying
+    plan rate limits is proof of a claude.ai subscription either way.
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    ttl = config.get("auth_cache_ttl", 600)
+    key = _auth_fingerprint()
+    state = _read_state()
+    cache = state.get("auth_cache") or {}
+    entry = cache.get(key) if isinstance(cache.get(key), dict) else None
+    now = time.time()
+
+    expired = entry is None or now - entry.get("ts", 0) >= ttl
+    if expired and now - (entry or {}).get("refreshing", 0) > AUTH_REFRESH_BACKOFF and _claude_executable():
+        entry = dict(entry or {}, refreshing=now)
+        cache[key] = entry
+        state["auth_cache"] = _prune(cache)
+        _write_state(state)
+        _spawn_auth_refresh(key, ttl)
+        # Pick up the result if the refresh already landed
+        landed = (_read_state().get("auth_cache") or {}).get(key)
+        entry = landed if isinstance(landed, dict) else entry
+
+    status = (entry or {}).get("status") or _auth_from_env() or {}
+    auth = {
+        "method": status.get("authMethod"),
+        "provider": status.get("apiProvider"),
+        "plan": status.get("subscriptionType"),
+    }
+    if _plan_windows_from_payload(data) and auth["method"] != "claude.ai":
+        auth = {"method": "claude.ai", "provider": "firstParty", "plan": None}
+    return auth
+
+
+def is_subscription(auth):
+    """True when the session bills against a claude.ai plan."""
+    return bool(auth) and auth.get("method") in ("claude.ai", "oauth_token") \
+        and auth.get("provider") in (None, "firstParty")
+
+
+def auth_badge(auth):
+    """Return (label, color_name) for the auth badge, or (None, None) if unknown."""
+    if not auth:
+        return None, None
+    provider = auth.get("provider")
+    if provider and provider != "firstParty":
+        return PROVIDER_LABELS.get(provider, str(provider).title()), "white"
+    method = auth.get("method")
+    if method == "claude.ai":
+        plan = str(auth.get("plan") or "")
+        plan = plan.replace("claude_", "").replace("_", " ").strip()
+        return (plan.title() if plan else "Claude.ai"), "bright_cyan"
+    if method in ("api_key", "api_key_helper"):
+        return "API", "bright_orange"
+    if method == "oauth_token":
+        return "OAuth", "bright_cyan"
+    if method == "auth_token":
+        return "Token", "bright_orange"
+    return None, None
+
+
+# ─── HP ──────────────────────────────────────────────────────────
+
+PLAN_WINDOWS = ("five_hour", "seven_day")
+
+
+def _plan_windows_from_payload(data):
+    """Plan usage windows Claude Code sent in this payload."""
+    rl = data.get("rate_limits") or {}
+    out = {}
+    for name in PLAN_WINDOWS:
+        w = rl.get(name)
+        if isinstance(w, dict) and isinstance(w.get("used_percentage"), (int, float)):
+            out[name] = {"used": float(w["used_percentage"]), "resets_at": w.get("resets_at")}
+    return out
+
+
+def get_plan_usage(data):
+    """Plan usage windows {name: {"used", "resets_at"}} for claude.ai subscribers.
+
+    Claude Code sends `rate_limits` in the payload, but only after the
+    session's first API response. Until then, reuse the last values seen by
+    any session (plan usage is account-wide) so HP doesn't flash to 100% on
+    startup or after /clear. A window past its resets_at has rolled over.
+    """
+    windows = _plan_windows_from_payload(data)
+    state = _read_state()
+    if windows:
+        if state.get("usage_cache") != windows:
+            state["usage_cache"] = windows
+            _write_state(state)
+        return windows
+    now = time.time()
+    cached = state.get("usage_cache") or {}
+    return {
+        name: w for name, w in cached.items()
+        if name in PLAN_WINDOWS and isinstance(w, dict)
+        and isinstance(w.get("used"), (int, float))
+        and not (isinstance(w.get("resets_at"), (int, float)) and w["resets_at"] <= now)
+    }
+
+
+def _hp_from_window(name, window):
+    return {
+        "pct": _clamp(100.0 - window["used"]),
+        "source": name,
+        "resets_at": window.get("resets_at"),
+        "spend": None,
+    }
+
+
+def _hp_full(source):
+    return {"pct": 100.0, "source": source, "resets_at": None, "spend": None}
+
+
+def _hp_from_spend_limit(data):
+    """HP from a Claude apps gateway spend limit, or None when absent."""
+    s = (data.get("rate_limits") or {}).get("spend_limit")
+    if not isinstance(s, dict) or not isinstance(s.get("used_percentage"), (int, float)):
+        return None
+    spend = None
+    if isinstance(s.get("used_usd"), (int, float)) and isinstance(s.get("limit_usd"), (int, float)):
+        spend = (s["used_usd"], s["limit_usd"])
+    return {
+        "pct": _clamp(100.0 - s["used_percentage"]),
+        "source": "spend_limit",
+        "resets_at": s.get("resets_at"),
+        "spend": spend,
+    }
+
+
+def _hp_from_budget(data, config):
+    budget = config.get("hp_budget_usd", 5.00)
+    spent = (data.get("cost") or {}).get("total_cost_usd", 0) or 0
+    if budget <= 0:
+        return _hp_full("cost_budget")
+    return {
+        "pct": _clamp((budget - spent) / budget * 100),
+        "source": "cost_budget",
+        "resets_at": None,
+        "spend": None,
+    }
+
+
+def resolve_hp(data, config, auth=None):
+    """Resolve HP. Goes down as usage increases.
+
+    Returns {"pct", "source", "resets_at", "spend"}. Sources:
+      auto        — subscribers: whichever plan window is closer to its cap;
+                    gateway: spend limit; otherwise session cost vs budget
+      5_hour      — 5-hour plan usage window (Pro/Max)
+      7_day       — 7-day plan usage window (Pro/Max)
+      spend_limit — Claude apps gateway spend limit
+      cost_budget — session cost vs hp_budget_usd (API key users)
+    """
+    source = config.get("hp_source", "auto")
+
+    if source == "cost_budget":
+        return _hp_from_budget(data, config)
+
+    if source in ("5_hour", "7_day"):
+        name = "five_hour" if source == "5_hour" else "seven_day"
+        window = get_plan_usage(data).get(name)
+        return _hp_from_window(name, window) if window else _hp_full(name)
+
+    if source == "spend_limit":
+        return _hp_from_spend_limit(data) or _hp_full("spend_limit")
+
+    # auto
+    if not _plan_windows_from_payload(data) and auth is None:
+        auth = resolve_auth(data, config)
+    if _plan_windows_from_payload(data) or is_subscription(auth):
+        windows = get_plan_usage(data)
+        if not windows:
+            return _hp_full("five_hour")
+        name = max(windows, key=lambda n: windows[n]["used"])
+        return _hp_from_window(name, windows[name])
+    return _hp_from_spend_limit(data) or _hp_from_budget(data, config)
 
 
 def calculate_hp(data, config):
-    """Calculate HP from configured source. Goes down as usage increases.
+    """HP percentage from the configured source (see resolve_hp)."""
+    return resolve_hp(data, config)["pct"]
 
-    Sources:
-      5_hour      — 5-hour plan usage window (Max/Pro)
-      7_day       — 7-day plan usage window (Max/Pro)
-      cost_budget — session cost vs hp_budget_usd (API key users)
-    """
-    source = config.get("hp_source", "5_hour")
 
-    if source == "cost_budget":
-        budget = config.get("hp_budget_usd", 5.00)
-        spent = data.get("cost", {}).get("total_cost_usd", 0) or 0
-        if budget <= 0:
-            return 100.0
-        return max(0.0, min(100.0, (budget - spent) / budget * 100))
-
-    # Plan usage sources (Max/Pro)
-    five_hour, seven_day = get_plan_usage(config)
-    if source == "7_day":
-        return max(0.0, min(100.0, 100.0 - seven_day))
-    # Default: 5_hour
-    return max(0.0, min(100.0, 100.0 - five_hour))
-
+# ─── MP ──────────────────────────────────────────────────────────
 
 def _read_transcript_context_tokens(transcript_path):
     """Derive current context token count by scanning the transcript tail.
@@ -467,34 +876,163 @@ def calculate_mp(data):
     return ctx.get("remaining_percentage", 100) or 100
 
 
+# ─── Git ─────────────────────────────────────────────────────────
+
+MAX_UNTRACKED_FILES = 2000      # cap per-render work in repos with huge untracked trees
+MAX_UNTRACKED_BYTES = 1 << 20   # read at most 1 MiB per untracked file when counting lines
+
+
+def _git(work_dir, *args):
+    """Run a read-only git command in work_dir. Returns stdout, or None on failure.
+
+    --no-optional-locks keeps `git status` from taking index.lock, which would
+    race with git commands Claude is running in the same repo.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "--no-optional-locks", "-C", work_dir, *args],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _count_file_lines(path):
+    """Count newlines like `wc -l`; binary files count as 0."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(MAX_UNTRACKED_BYTES)
+    except OSError:
+        return 0
+    if b"\0" in chunk[:8192]:
+        return 0
+    return chunk.count(b"\n")
+
+
+def _sum_numstat(output):
+    """Sum added + removed lines from `git diff --numstat` output."""
+    total = 0
+    for line in (output or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            try:
+                total += (int(parts[0]) if parts[0] != "-" else 0) + (int(parts[1]) if parts[1] != "-" else 0)
+            except ValueError:
+                pass
+    return total
+
+
+def _collect_git_info(work_dir, include_untracked):
+    """Branch, ahead/behind and uncommitted file/line counts. None if not a repo."""
+    status = _git(
+        work_dir, "status", "--porcelain=v2", "--branch", "-z",
+        "--untracked-files=" + ("all" if include_untracked else "no"),
+    )
+    if status is None:
+        return None
+    info = {"branch": "", "head": "", "ahead": 0, "behind": 0, "files": 0, "lines": 0, "untracked": 0}
+    untracked = []
+    entries = status.split("\0")
+    i = 0
+    while i < len(entries):
+        e = entries[i]
+        if e.startswith("# branch.oid "):
+            info["head"] = e[len("# branch.oid "):]
+        elif e.startswith("# branch.head "):
+            info["branch"] = e[len("# branch.head "):]
+        elif e.startswith("# branch.ab "):
+            for part in e[len("# branch.ab "):].split():
+                try:
+                    n = abs(int(part))
+                except ValueError:
+                    continue
+                info["ahead" if part.startswith("+") else "behind"] = n
+        elif e[:2] in ("1 ", "u "):
+            info["files"] += 1
+        elif e.startswith("2 "):
+            info["files"] += 1
+            i += 1  # renames/copies carry the original path as an extra field
+        elif e.startswith("? "):
+            info["files"] += 1
+            untracked.append(e[2:])
+        i += 1
+
+    if info["head"] == "(initial)":
+        info["head"] = ""
+    if info["branch"] == "(detached)":
+        info["branch"] = info["head"][:7]
+
+    # Changed lines vs HEAD (staged + unstaged). A repo with no commits yet
+    # has no HEAD, so diff the index and the worktree separately.
+    if info["head"]:
+        info["lines"] = _sum_numstat(_git(work_dir, "diff", "HEAD", "--numstat"))
+    else:
+        info["lines"] = (_sum_numstat(_git(work_dir, "diff", "--cached", "--numstat"))
+                         + _sum_numstat(_git(work_dir, "diff", "--numstat")))
+
+    # git diff can't see untracked files; status paths are repo-root relative.
+    info["untracked"] = len(untracked)
+    if untracked:
+        top = (_git(work_dir, "rev-parse", "--show-toplevel") or "").strip() or work_dir
+        for rel in untracked[:MAX_UNTRACKED_FILES]:
+            info["lines"] += _count_file_lines(os.path.join(top, rel))
+    return info
+
+
+def git_info(data, config=None):
+    """Git state for the workspace, cached for git_cache_ttl seconds.
+
+    Claude Code re-renders on every message, and `git status` in a large repo
+    is the slowest thing the statusline does. None outside a git repository.
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    work_dir = _work_dir(data)
+    if not work_dir:
+        return None
+    include = bool(config.get("drive_include_untracked", True))
+    ttl = config.get("git_cache_ttl", 5) or 0
+    key = hashlib.sha1(f"{work_dir}\0{include}".encode()).hexdigest()[:16]
+    cache_path = os.path.join(GIT_CACHE_DIR, f"keyblade_git_{key}.json")
+    if ttl > 0:
+        try:
+            with open(cache_path) as f:
+                cached = json.load(f)
+            if cached.get("dir") == work_dir and time.time() - cached.get("ts", 0) < ttl:
+                return cached.get("info")
+        except (OSError, ValueError, AttributeError):
+            pass
+    info = _collect_git_info(work_dir, include)
+    if ttl > 0:
+        _atomic_write_json(cache_path, {"ts": time.time(), "dir": work_dir, "info": info})
+    return info
+
+
+def _dir_basename(data):
+    current = _work_dir(data)
+    return os.path.basename(current.rstrip("/")) if current else ""
+
+
+def _world_name(data, config):
+    """World name for the workspace directory (world_map aware)."""
+    dirname = _dir_basename(data)
+    if not dirname:
+        return config.get("world_fallback", "Traverse Town")
+    return clean_text(config.get("world_map", {}).get(dirname, dirname))
+
+
 def world_and_branch(data, config=None):
     """Return (world_name, branch) separately for responsive display."""
     if config is None:
         config = DEFAULT_CONFIG
-    fallback = config.get("world_fallback", "Traverse Town")
-    ws = data.get("workspace", {})
-    current = ws.get("current_dir", "") or ws.get("project_dir", "")
-    if not current:
-        return fallback, ""
-    dirname = os.path.basename(current)
-    if not dirname:
-        return fallback, ""
-
-    # Apply world_map: custom name for this directory
-    wmap = config.get("world_map", {})
-    name = wmap.get(dirname, dirname)
-
+    name = _world_name(data, config)
+    if not _dir_basename(data):
+        return name, ""
     branch = ""
-    try:
-        if config.get("show_branch", True):
-            r = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, cwd=current, timeout=3,
-            )
-            branch = r.stdout.strip() if r.returncode == 0 else ""
-    except (subprocess.SubprocessError, OSError):
-        pass
-
+    if config.get("show_branch", True):
+        info = git_info(data, config)
+        branch = clean_text(info.get("branch", "")) if info else ""
     return name, branch
 
 
@@ -502,16 +1040,87 @@ def world_name(data, config=None):
     """Convert workspace directory to world name with git branch.
 
     Config options:
-      show_branch    — append :branch to world name
+      show_branch    — append ∙ branch to world name
       world_fallback — name when no directory found
       world_map      — map directory names to custom names
     """
     name, branch = world_and_branch(data, config)
     if branch:
-        return f"{name} \u2219 {branch}"
+        return f"{name} ∙ {branch}"
     return name
 
 
+def repo_url(data, branch=""):
+    """Web URL for the workspace repo (and branch, on known hosts)."""
+    repo = (data.get("workspace") or {}).get("repo") or {}
+    host, owner, name = repo.get("host"), repo.get("owner"), repo.get("name")
+    if not (host and owner and name):
+        return ""
+    url = f"https://{host}/{owner}/{name}"
+    if branch:
+        ref = quote(branch, safe="/")
+        if "github" in host:
+            url += f"/tree/{ref}"
+        elif "gitlab" in host:
+            url += f"/-/tree/{ref}"
+        elif "bitbucket" in host:
+            url += f"/src/{ref}"
+    return url
+
+
+def worktree_name(data):
+    """Name of the git worktree the session is in, if any."""
+    wt = (data.get("worktree") or {}).get("name")
+    return clean_text(wt or (data.get("workspace") or {}).get("git_worktree") or "")
+
+
+def calculate_drive(data, config=None):
+    """Get uncommitted file and line counts from git.
+
+    Config options:
+      drive_include_untracked — count untracked (new) files
+    """
+    info = git_info(data, config)
+    if not info:
+        return 0, 0
+    return info["files"], info["lines"]
+
+
+def _session_progress(data, config):
+    """(commits, files) since this session started, measured against the HEAD
+    recorded the first time the session was seen in this directory."""
+    work_dir = _work_dir(data)
+    info = git_info(data, config)
+    if not work_dir or info is None:
+        return 0, 0
+    key = data.get("session_id") or "_default"
+    state = _read_state()
+    anchors = state.get("anchors") or {}
+    anchor = anchors.get(key)
+    if not isinstance(anchor, dict) or anchor.get("dir") != work_dir:
+        anchor = {"dir": work_dir, "sha": info.get("head", ""), "ts": 0}
+    now = time.time()
+    if now - anchor.get("ts", 0) >= (config.get("git_cache_ttl", 5) or 0):
+        sha = anchor["sha"]
+        commits = 0
+        if info.get("head"):
+            out = _git(work_dir, "rev-list", "--count", f"{sha}..HEAD" if sha else "HEAD")
+            commits = int(out.strip()) if out and out.strip().isdigit() else 0
+        if sha:
+            changed = _git(work_dir, "diff", "--name-only", sha)
+        elif info.get("head"):
+            changed = _git(work_dir, "ls-files")
+        else:
+            changed = _git(work_dir, "diff", "--cached", "--name-only")
+        files = len([l for l in (changed or "").splitlines() if l.strip()])
+        anchor.update(commits=commits, files=files + info.get("untracked", 0), ts=now)
+        anchors[key] = anchor
+        state["anchors"] = _prune(anchors)
+        _write_state(state)
+    return anchor.get("commits", 0), anchor.get("files", 0)
+
+
+# ─── Level & EXP ─────────────────────────────────────────────────
 
 def format_duration(ms):
     """Format milliseconds as a journey timer."""
@@ -528,15 +1137,14 @@ def format_duration(ms):
 def _level_value(data, config):
     """Get the raw value used for level calculation based on level_source."""
     source = config.get("level_source", "lines")
-    cost = data.get("cost", {})
+    cost = data.get("cost") or {}
     added = cost.get("total_lines_added", 0) or 0
     removed = cost.get("total_lines_removed", 0) or 0
     if source == "added_only":
         return added
-    if source == "commits":
-        return cost.get("total_commits", 0) or 0
-    if source == "files":
-        return cost.get("total_files_changed", 0) or 0
+    if source in ("commits", "files"):
+        commits, files = _session_progress(data, config)
+        return commits if source == "commits" else files
     # Default: "lines" (added + removed)
     return added + removed
 
@@ -576,92 +1184,30 @@ def calculate_exp(data, config=None):
     return _level_value(data, config)
 
 
-def calculate_drive(data, config=None):
-    """Get uncommitted file and line counts from git.
+# ─── Markers ─────────────────────────────────────────────────────
 
-    Config options:
-      drive_include_untracked — count untracked (new) files
-    """
-    if config is None:
-        config = DEFAULT_CONFIG
-    ws = data.get("workspace", {})
-    work_dir = ws.get("current_dir", "") or ws.get("project_dir", "")
-    if not work_dir:
-        return 0, 0
-    try:
-        include_untracked = config.get("drive_include_untracked", True)
-
-        # Count uncommitted files
-        r = subprocess.run(
-            ["git", "status", "--porcelain"],
-            capture_output=True, text=True, cwd=work_dir, timeout=3,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            status_lines = [l for l in r.stdout.strip().split("\n") if l.strip()]
-            if not include_untracked:
-                status_lines = [l for l in status_lines if not l.startswith("??")]
-            files = len(status_lines)
-        else:
-            files = 0
-
-        # Count changed lines (staged + unstaged)
-        lines = 0
-        for args in [["git", "diff", "--numstat"], ["git", "diff", "--cached", "--numstat"]]:
-            r = subprocess.run(args, capture_output=True, text=True, cwd=work_dir, timeout=3)
-            for line in r.stdout.strip().split("\n"):
-                if not line.strip():
-                    continue
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    try:
-                        a = int(parts[0]) if parts[0] != "-" else 0
-                        d = int(parts[1]) if parts[1] != "-" else 0
-                        lines += a + d
-                    except ValueError:
-                        pass
-
-        # Count lines in untracked files (git diff can't see these)
-        if include_untracked:
-            r = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
-                capture_output=True, text=True, cwd=work_dir, timeout=3,
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                for fpath in r.stdout.strip().split("\n"):
-                    if not fpath.strip():
-                        continue
-                    try:
-                        fr = subprocess.run(
-                            ["wc", "-l", fpath],
-                            capture_output=True, text=True, cwd=work_dir, timeout=2,
-                        )
-                        if fr.returncode == 0:
-                            lines += int(fr.stdout.strip().split()[0])
-                    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
-                        pass
-
-        return files, lines
-    except (subprocess.SubprocessError, OSError):
-        return 0, 0
-
-
-def hp_color(pct):
+def hp_color(pct, base="green"):
     """Return ANSI color based on HP percentage."""
+    return ANSI.get(hp_bar_color(pct, {"hp": base}), ANSI["green"])
+
+
+def hp_bar_color(pct, colors):
+    """Color name for the HP bar: colors.hp when healthy, amber/red when low."""
     if pct > 50:
-        return ANSI["green"]
+        return colors.get("hp", "green")
     if pct > 20:
-        return ANSI["bright_orange"]
-    return ANSI["red"]
+        return "bright_orange"
+    return "red"
 
 
 def hp_danger_marker(pct):
     """Return KH-style danger marker for HP percentage."""
     if pct < 15:
-        return f" {ANSI['red']}{ANSI['bold']}\033[7m\u300cDANGER\u300d\033[27m{ANSI['reset']}"
+        return f" {ANSI['red']}{ANSI['bold']}\033[7m「DANGER」\033[27m{ANSI['reset']}"
     if pct < 20:
-        return f" {ANSI['red']}{ANSI['bold']}\u300cDANGER\u300d{ANSI['reset']}"
+        return f" {ANSI['red']}{ANSI['bold']}「DANGER」{ANSI['reset']}"
     if pct <= 50:
-        return f" {ANSI['bright_orange']}\u26a0{ANSI['reset']}"
+        return f" {ANSI['bright_orange']}⚠{ANSI['reset']}"
     return ""
 
 
@@ -684,7 +1230,7 @@ def mp_label_and_color(mp_pct, colors):
 def mp_charge_marker(mp_pct):
     """Return MP Charge marker if in charge state."""
     if mp_charge_state(mp_pct):
-        return f" {ANSI['magenta']}{ANSI['bold']}\u300cMP CHARGE\u300d{ANSI['reset']}"
+        return f" {ANSI['magenta']}{ANSI['bold']}「MP CHARGE」{ANSI['reset']}"
     return ""
 
 
@@ -720,7 +1266,7 @@ def check_level_up(level, data=None):
 def level_up_marker(level, data=None):
     """Return level-up notification if recently leveled up."""
     if check_level_up(level, data):
-        return f" {ANSI['bright_yellow']}{ANSI['bold']}\u300cLEVEL UP!\u300d{ANSI['reset']}"
+        return f" {ANSI['bright_yellow']}{ANSI['bold']}「LEVEL UP!」{ANSI['reset']}"
     return ""
 
 
@@ -757,7 +1303,7 @@ def check_save_point(drive_files, drive_lines, data=None):
 def save_point_marker(drive_files, drive_lines, data=None):
     """Return Save Point badge if working tree just became clean."""
     if check_save_point(drive_files, drive_lines, data):
-        return f" {ANSI['bright_green']}{ANSI['bold']}\u300cSAVE POINT\u300d{ANSI['reset']}"
+        return f" {ANSI['bright_green']}{ANSI['bold']}「SAVE POINT」{ANSI['reset']}"
     return ""
 
 
@@ -771,53 +1317,51 @@ def is_anti_form(hp_pct, mp_pct, drive_pct):
     return (hp_pct < 5 and drive_pct > 90) or mp_pct < 5
 
 
+# ─── Effort / Drive Form ─────────────────────────────────────────
+
 def resolve_effort_level(data, config=None):
-    """Resolve raw effort level string.
+    """Resolve raw effort level string, or None when the model has no effort.
 
     Priority:
-      1. Statusbar JSON 'effort' or 'reasoning_effort' (future-proof)
+      1. Payload `effort.level` (live — follows mid-session /effort changes)
       2. ~/.claude/settings.json 'effortLevel'
       3. CLAUDE_CODE_EFFORT_LEVEL env var
       4. Default: 'high'
+
+    Claude Code v2.1+ omits `effort` when the current model doesn't support
+    the effort parameter (e.g. Haiku); that returns None instead of falling
+    back to settings.
     """
-    # 1. Check statusbar data (future-proof)
     effort = data.get("effort") or data.get("reasoning_effort")
-
-    # 2. Read from Claude Code settings
-    if not effort:
-        config_dir = os.environ.get(
-            "CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")
-        )
-        settings_path = os.path.join(config_dir, "settings.json")
-        try:
-            with open(settings_path) as f:
-                settings = json.load(f)
-            effort = settings.get("effortLevel")
-        except (FileNotFoundError, json.JSONDecodeError, PermissionError):
-            pass
-
-    # 3. Check environment variable
-    if not effort:
-        effort = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
-
-    # 4. Default to high
-    if not effort:
-        effort = "high"
 
     # Claude Code v2.1+ wraps effort as {"level": "..."}; older versions
     # and settings.json still use a plain string.
     if isinstance(effort, dict):
-        effort = effort.get("level") or "high"
+        effort = effort.get("level")
+
+    if not effort and (_cc_version(data) or (0, 0)) >= (2, 1):
+        return None
+
+    if not effort:
+        effort = _claude_settings().get("effortLevel")
+
+    if not effort:
+        effort = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+
+    if not effort:
+        effort = "high"
 
     return str(effort).lower()
 
 
 def resolve_drive_form(data, config=None):
-    """Resolve current Drive Form name from reasoning effort level."""
+    """Resolve current Drive Form name from reasoning effort level (None if no effort)."""
     if config is None:
         config = DEFAULT_CONFIG
     names = config.get("drive_form_names", DEFAULT_CONFIG["drive_form_names"])
     effort = resolve_effort_level(data, config)
+    if effort is None:
+        return None
     return names.get(effort, names.get("high", "Master Form"))
 
 
@@ -826,6 +1370,8 @@ def resolve_drive_form_color_name(data, config=None):
     if config is None:
         config = DEFAULT_CONFIG
     effort = resolve_effort_level(data, config)
+    if effort is None:
+        return config.get("colors", DEFAULT_CONFIG["colors"]).get("drive", "magenta")
     form_colors = config.get("drive_form_colors", DEFAULT_CONFIG["drive_form_colors"])
     return form_colors.get(effort, form_colors.get("high", "yellow"))
 
@@ -865,7 +1411,8 @@ def render_bar(percentage, width, color, show_pct=True, icon="", icon_color=""):
     if bg:
         empty_part = bg + (" " * max(0, empty)) + rst
     else:
-        empty_part = ANSI["dim"] + (BAR_EMPTY * max(0, empty)) + rst
+        # Drop the fill's bold first — bold+dim renders at normal intensity
+        empty_part = rst + c + ANSI["dim"] + (BAR_EMPTY * max(0, empty)) + rst
 
     bar = fill_part + empty_part
 
@@ -876,226 +1423,570 @@ def render_bar(percentage, width, color, show_pct=True, icon="", icon_color=""):
     return f"{icon_str}{bar}{c}{pct_str}{rst}"
 
 
+# ─── Segments ────────────────────────────────────────────────────
+
+PR_STATES = {
+    "approved": ("✓", "green"),             # ✓
+    "changes_requested": ("✗", "red"),      # ✗
+    "pending": ("○", "yellow"),             # ○
+    "draft": ("◌", "dim"),                  # ◌
+}
+
+
+def gather(data, config, auth=None):
+    """Compute the values every theme draws from, once per render."""
+    colors = config.get("colors", DEFAULT_CONFIG["colors"])
+    if auth is None and (config.get("show_auth", True) or config.get("hp_source", "auto") == "auto"):
+        auth = resolve_auth(data, config)
+    hp = resolve_hp(data, config, auth)
+    mp = calculate_mp(data)
+    model = data.get("model") or {}
+    cost = data.get("cost") or {}
+    info = git_info(data, config)
+    files, lines = (info["files"], info["lines"]) if info else (0, 0)
+
+    drive_src = config.get("drive_source", "lines")
+    if drive_src == "files":
+        drive_val = files
+    elif drive_src == "both":
+        drive_val = files + lines
+    else:
+        drive_val = lines
+    drive_max = config.get("drive_max_lines", 1000)
+    drive_pct = min(100.0, drive_val / drive_max * 100) if drive_max > 0 else 0.0
+
+    if is_anti_form(hp["pct"], mp, drive_pct):
+        form, form_color = "Anti Form", "dim"
+    else:
+        form = resolve_drive_form(data, config)
+        form_color = resolve_drive_form_color_name(data, config)
+
+    return {
+        "data": data,
+        "config": config,
+        "colors": colors,
+        "auth": auth,
+        "hp": hp,
+        "mp": mp,
+        "keyblade": resolve_keyblade(model.get("id"), model.get("display_name"), config),
+        "munny": int((cost.get("total_cost_usd") or 0) * 100),
+        "duration_ms": cost.get("total_duration_ms") or 0,
+        "git": info,
+        "drive_files": files,
+        "drive_lines": lines,
+        "drive_pct": drive_pct,
+        "form": form,
+        "form_color": form_color,
+        "budget": line_budget(config),
+    }
+
+
+def seg_mp(hud, width):
+    mp = hud["mp"]
+    _, clr = mp_label_and_color(mp, hud["colors"])
+    return render_bar(mp, width, clr, icon=MP_ICON, icon_color="icon_mp") + mp_charge_marker(mp)
+
+
+def seg_hp(hud, width):
+    hp = hud["hp"]["pct"]
+    bar = render_bar(hp, width, hp_bar_color(hp, hud["colors"]), icon=HEART_ICON, icon_color="icon_heart")
+    return bar + hp_danger_marker(hp)
+
+
+def seg_keyblade(hud, bold=True):
+    kc = ANSI.get(hud["colors"].get("keyblade", "cyan"), ANSI["cyan"])
+    text = f"{kc}{KEYBLADE_ICON}  {ANSI['bold'] if bold else ''}{hud['keyblade']}{ANSI['reset']}"
+    if hud["config"].get("show_fast_mode", True) and hud["data"].get("fast_mode"):
+        text += f" {ANSI['bright_yellow']}{HASTE_ICON}{ANSI['reset']}"
+    return text
+
+
+def seg_auth(hud):
+    if not hud["config"].get("show_auth", True):
+        return ""
+    label, color = auth_badge(hud["auth"])
+    if not label:
+        return ""
+    return f"{ANSI.get(color, '')}{AUTH_ICON} {label}{ANSI['reset']}"
+
+
+def world_segments(hud, prio=2):
+    """World name (linked to the repo), extra dirs, branch with ahead/behind, worktree."""
+    data, config = hud["data"], hud["config"]
+    if not config.get("show_world", True):
+        return []
+    bld, rst, dim = ANSI["bold"], ANSI["reset"], ANSI["dim"]
+    name = _world_name(data, config)
+    if hud["budget"] is not None:
+        # Shorten long directory names on narrow terminals rather than drop the world
+        name = truncate(name, max(12, hud["budget"] // 3))
+    info = hud["git"] or {}
+    branch = clean_text(info.get("branch", "")) if config.get("show_branch", True) else ""
+    segs = [(prio, f"{bld}{WORLD_ICON} {hyperlink(name, repo_url(data, branch), config)}{rst}")]
+    added = len((data.get("workspace") or {}).get("added_dirs") or [])
+    if added:
+        segs.append((prio + 3, f"{dim}+{added}{rst}", " "))
+    if branch:
+        ab = ""
+        if info.get("ahead"):
+            ab += f"↑{info['ahead']}"
+        if info.get("behind"):
+            ab += f"↓{info['behind']}"
+        segs.append((prio + 2, f"{bld}{branch}{rst}" + (f" {dim}{ab}{rst}" if ab else ""), f" {bld}∙{rst} "))
+    worktree = worktree_name(data)
+    if worktree and config.get("show_worktree", True):
+        segs.append((prio + 2, f"{dim}{WORKTREE_ICON} {worktree}{rst}", " "))
+    return segs
+
+
+def seg_pr(hud):
+    """Open PR/MR number, colored and marked by review state, linked to the PR."""
+    pr = hud["data"].get("pr") or {}
+    number = pr.get("number")
+    if not number or not hud["config"].get("show_pr", True):
+        return ""
+    prefix = "!" if pr.get("kind") == "mr" else "#"
+    glyph, color = PR_STATES.get(pr.get("review_state"), ("", "white"))
+    text = f"{prefix}{clean_text(number)}" + (f" {glyph}" if glyph else "")
+    return f"{ANSI.get(color, '')}{hyperlink(text, pr.get('url'), hud['config'])}{ANSI['reset']}"
+
+
+def seg_cure(hud):
+    """Countdown until the HP window resets (KH Cure)."""
+    resets_at = hud["hp"].get("resets_at")
+    now = time.time()
+    if not hud["config"].get("show_hp_reset", True) or not isinstance(resets_at, (int, float)) or resets_at <= now:
+        return ""
+    return f"{ANSI['green']}{CURE_ICON} {format_countdown(resets_at - now)}{ANSI['reset']}"
+
+
+def seg_spend(hud):
+    """Gateway spend vs limit, when HP comes from a spend limit."""
+    spend = hud["hp"].get("spend")
+    if not spend:
+        return ""
+    used, limit = spend
+    mc = ANSI.get(hud["colors"].get("munny", "yellow"), ANSI["yellow"])
+    return f"{mc}${used:,.0f}/${limit:,.0f}{ANSI['reset']}"
+
+
+def seg_save_point(hud):
+    if hud["git"] is None:
+        return ""
+    return save_point_marker(hud["drive_files"], hud["drive_lines"], hud["data"]).lstrip(" ")
+
+
+def seg_form(hud, short=False):
+    if not hud["form"] or not hud["config"].get("show_drive_form", True):
+        return ""
+    name = hud["form"].replace(" Form", "") if short else hud["form"]
+    return f"{ANSI.get(hud['form_color'], ANSI['yellow'])}{FORM_ICON} {name}{ANSI['reset']}"
+
+
+def seg_munny(hud):
+    if not hud["config"].get("show_munny", True):
+        return ""
+    mc = ANSI.get(hud["colors"].get("munny", "yellow"), ANSI["yellow"])
+    return f"{mc}{MUNNY_ICON} {hud['munny']}{ANSI['reset']}"
+
+
+def seg_party(hud):
+    name = clean_text((hud["data"].get("agent") or {}).get("name", ""))
+    if not name or not hud["config"].get("show_party", True):
+        return ""
+    return f"{PARTY_ICON} {name}"
+
+
+def seg_session(hud):
+    name = clean_text(hud["data"].get("session_name", ""))
+    if not name or not hud["config"].get("show_session_name", True):
+        return ""
+    return f"{ANSI['dim']}{JOURNAL_ICON} {truncate(name, 28)}{ANSI['reset']}"
+
+
+def seg_focus(hud):
+    """KH3 Focus gauge: prompt cache hit ratio, and time until a warm cache goes cold."""
+    pc = hud["data"].get("prompt_cache")
+    if not isinstance(pc, dict) or not pc.get("caching_observed") or not hud["config"].get("show_focus", True):
+        return ""
+    ratio = pc.get("hit_ratio")
+    pct = f"{ratio * 100:.0f}%" if isinstance(ratio, (int, float)) else "—"
+    if not pc.get("warm"):
+        return f"{ANSI['dim']}{FOCUS_ICON} {pct} cold{ANSI['reset']}"
+    expires = pc.get("expires_at")
+    now = time.time()
+    tail = f" {format_countdown(expires - now)}" if isinstance(expires, (int, float)) and expires > now else ""
+    return f"{ANSI['cyan']}{FOCUS_ICON} {pct}{ANSI['dim']}{tail}{ANSI['reset']}"
+
+
+def seg_timer(hud):
+    if not hud["config"].get("show_timer", True):
+        return ""
+    return f"{ANSI['bold']}{TIMER_ICON} {format_duration(hud['duration_ms'])}{ANSI['reset']}"
+
+
+def seg_vim(hud):
+    mode = clean_text((hud["data"].get("vim") or {}).get("mode", ""))
+    if not mode or not hud["config"].get("show_vim_mode", False):
+        return ""
+    return f"{ANSI['dim']}-- {mode} --{ANSI['reset']}"
+
+
 # ─── Theme: Classic KH HUD (2 lines) ────────────────────────────
 
-def render_classic(data, config):
+def render_classic(data, config, auth=None):
     """Classic Kingdom Hearts HUD — HP bar, MP bar, keyblade, munny."""
-    hp_pct = calculate_hp(data, config)
-    mp_pct = calculate_mp(data)
+    hud = gather(data, config, auth)
+    budget = hud["budget"]
+    mp_w, hp_w = bar_widths(budget)
 
-    model = data.get("model", {})
-    keyblade = resolve_keyblade(
-        model.get("id", ""), model.get("display_name", ""), config
-    )
+    # Line 1: MP bar + Keyblade + Auth + World + PR
+    line1 = fit_segments([
+        (0, seg_mp(hud, mp_w)),
+        (0, seg_keyblade(hud)),
+        (3, seg_auth(hud)),
+        *world_segments(hud),
+        (4, seg_pr(hud)),
+    ], budget)
 
-    cost = data.get("cost", {}).get("total_cost_usd", 0) or 0
-    munny = int(cost * 100)
-
-    colors = config.get("colors", DEFAULT_CONFIG["colors"])
-    rst = ANSI["reset"]
-    bld = ANSI["bold"]
-
-    kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
-    mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
-
-    # Drive data (needed for Anti Form + Save Point)
-    drive_files, drive_lines = calculate_drive(data, config)
-    drive_max = config.get("drive_max_lines", 500)
-    drive_pct = min(100.0, (drive_lines / drive_max * 100)) if drive_max > 0 else 0
-
-    # Anti Form check
-    if is_anti_form(hp_pct, mp_pct, drive_pct):
-        form_name = "Anti Form"
-        drive_color_name = "dim"
-    else:
-        form_name = resolve_drive_form(data, config)
-        drive_color_name = resolve_drive_form_color_name(data, config)
-    dc = ANSI.get(drive_color_name, ANSI["yellow"])
-
-    # Line 1: MP bar + Keyblade + World
-    _, mp_clr = mp_label_and_color(mp_pct, colors)
-    mp_bar = render_bar(mp_pct, 16, mp_clr, icon=MP_ICON, icon_color="icon_mp")
-    mp_marker = mp_charge_marker(mp_pct)
-    line1_parts = [f"  {mp_bar}{mp_marker}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
-    if config.get("show_world", True):
-        world = world_name(data, config)
-        line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
-    line1 = "  ".join(line1_parts)
-
-    # Line 2: HP bar + Save Point + Drive Form + Munny
-    color_name = "green"
-    if hp_pct <= 50:
-        color_name = "bright_orange" if hp_pct > 20 else "red"
-    hp_bar = render_bar(hp_pct, 24, color_name, icon=HEART_ICON, icon_color="icon_heart")
-    hp_marker = hp_danger_marker(hp_pct)
-    sp_marker = save_point_marker(drive_files, drive_lines, data)
-    line2_parts = [f"  {hp_bar}{hp_marker}{sp_marker}"]
-    if config.get("show_drive_form", True):
-        line2_parts.append(f"{dc}{FORM_ICON} {form_name}{rst}")
-    if config.get("show_munny", True):
-        line2_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
-    line2 = "  ".join(line2_parts)
+    # Line 2: HP bar + Cure + Save Point + Drive Form + Munny + Party
+    line2 = fit_segments([
+        (0, seg_hp(hud, hp_w)),
+        (3, seg_spend(hud), " "),
+        (5, seg_cure(hud), " "),
+        (1, seg_save_point(hud), " "),
+        (2, seg_form(hud)),
+        (3, seg_munny(hud)),
+        (4, seg_party(hud)),
+        (6, seg_session(hud)),
+        (2, seg_vim(hud)),
+    ], budget)
 
     return line1 + "\n" + line2
 
 
 # ─── Theme: Minimal KH (1 line) ─────────────────────────────────
 
-def render_minimal(data, config):
+def render_minimal(data, config, auth=None):
     """Minimal KH — single line, subtle references."""
-    hp_pct = calculate_hp(data, config)
-    mp_pct = calculate_mp(data)
-
-    model = data.get("model", {})
-    keyblade = resolve_keyblade(
-        model.get("id", ""), model.get("display_name", ""), config
-    )
-
-    cost = data.get("cost", {}).get("total_cost_usd", 0) or 0
-    munny = int(cost * 100)
-
-    colors = config.get("colors", DEFAULT_CONFIG["colors"])
-    kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
-    mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
-    mpc = ANSI.get(colors.get("mp", "blue"), ANSI["blue"])
+    hud = gather(data, config, auth)
+    colors = hud["colors"]
     rst = ANSI["reset"]
     bld = ANSI["bold"]
-    dim = ANSI["dim"]
 
-    # Drive data (needed for Anti Form + Save Point)
-    drive_files, drive_lines = calculate_drive(data, config)
-    drive_max = config.get("drive_max_lines", 500)
-    drive_pct = min(100.0, (drive_lines / drive_max * 100)) if drive_max > 0 else 0
-
-    hc = hp_color(hp_pct)
+    hp_pct, mp_pct = hud["hp"]["pct"], hud["mp"]
+    hc = hp_color(hp_pct, colors.get("hp", "green"))
     hp_str = f"{hc}{bld}{hp_pct:.0f}%{rst}" if hp_pct <= 20 else f"{hc}{hp_pct:.0f}%{rst}"
     hp_str += hp_danger_marker(hp_pct)
-    hp_str += save_point_marker(drive_files, drive_lines, data)
 
-    # Anti Form check
-    if is_anti_form(hp_pct, mp_pct, drive_pct):
-        form_name = "Anti Form"
-        drive_color_name = "dim"
-    else:
-        form_name = resolve_drive_form(data, config)
-        drive_color_name = resolve_drive_form_color_name(data, config)
-    dc = ANSI.get(drive_color_name, ANSI["yellow"])
-
-    parts = [f"{kc}{KEYBLADE_ICON}  {keyblade}{rst}"]
-
-    if config.get("show_drive_form", True):
-        # Strip " Form" suffix for compact display
-        short_form = form_name.replace(" Form", "")
-        parts.append(f"{dc}{FORM_ICON} {short_form}{rst}")
-
-    if config.get("show_world", True):
-        world = world_name(data, config)
-        parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
-
-    parts.append(f"{HEART_ICON} {hp_str}")
     if mp_charge_state(mp_pct):
-        parts.append(f"{ANSI['magenta']}{MP_ICON} {mp_pct:.0f}% \u300cCHARGE\u300d{rst}")
+        mp_str = f"{ANSI['magenta']}{MP_ICON} {mp_pct:.0f}% 「CHARGE」{rst}"
     else:
-        parts.append(f"{mpc}{MP_ICON} {mp_pct:.0f}%{rst}")
+        mpc = ANSI.get(colors.get("mp", "blue"), ANSI["blue"])
+        mp_str = f"{mpc}{MP_ICON} {mp_pct:.0f}%{rst}"
 
-    if config.get("show_munny", True):
-        parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
-
-    return "  " + "  ".join(parts)
+    return fit_segments([
+        (0, seg_keyblade(hud, bold=False)),
+        (3, seg_auth(hud)),
+        (2, seg_form(hud, short=True)),
+        *world_segments(hud, prio=3),
+        (4, seg_pr(hud)),
+        (0, f"{HEART_ICON} {hp_str}"),
+        (3, seg_spend(hud), " "),
+        (6, seg_cure(hud), " "),
+        (1, seg_save_point(hud), " "),
+        (0, mp_str),
+        (2, seg_munny(hud)),
+        (5, seg_party(hud)),
+        (2, seg_vim(hud)),
+    ], hud["budget"])
 
 
 # ─── Theme: Full RPG (3 lines) ──────────────────────────────────
 
-def render_full_rpg(data, config):
+def render_full_rpg(data, config, auth=None):
     """Full RPG HUD — HP/MP, keyblade, world, munny, timer, EXP, drive, level."""
-    hp_pct = calculate_hp(data, config)
-    mp_pct = calculate_mp(data)
-    cost_data = data.get("cost", {})
-    cost = cost_data.get("total_cost_usd", 0) or 0
-    munny = int(cost * 100)
-
-    model = data.get("model", {})
-    keyblade = resolve_keyblade(
-        model.get("id", ""), model.get("display_name", ""), config
-    )
-
-    colors = config.get("colors", DEFAULT_CONFIG["colors"])
-    kc = ANSI.get(colors.get("keyblade", "cyan"), ANSI["cyan"])
-    mc = ANSI.get(colors.get("munny", "yellow"), ANSI["yellow"])
+    hud = gather(data, config, auth)
+    budget = hud["budget"]
+    mp_w, hp_w = bar_widths(budget)
     rst = ANSI["reset"]
     bld = ANSI["bold"]
-    dim = ANSI["dim"]
 
-    exp = calculate_exp(data, config)
     level = calculate_level(data, config)
-    drive_files, drive_lines = calculate_drive(data, config)
-    duration_ms = cost_data.get("total_duration_ms", 0) or 0
+    exp = calculate_exp(data, config)
 
-    # Line 1: MP bar (with Charge state) + Keyblade + World
-    _, mp_clr = mp_label_and_color(mp_pct, colors)
-    mp_bar = render_bar(mp_pct, 16, mp_clr, icon=MP_ICON, icon_color="icon_mp")
-    mp_marker = mp_charge_marker(mp_pct)
-    world = world_name(data, config)
-    line1_parts = [f"  {mp_bar}{mp_marker}  {kc}{KEYBLADE_ICON}  {bld}{keyblade}{rst}"]
-    line1_parts.append(f"{bld}{WORLD_ICON} {world}{rst}")
-    line1 = "  ".join(line1_parts)
+    # Line 1: MP bar (with Charge state) + Keyblade + Auth + World + PR
+    line1 = fit_segments([
+        (0, seg_mp(hud, mp_w)),
+        (0, seg_keyblade(hud)),
+        (3, seg_auth(hud)),
+        *world_segments(hud),
+        (4, seg_pr(hud)),
+    ], budget)
 
-    # Line 2: HP bar + Level + EXP + Level-Up + Save Point
-    color_name = "green"
-    if hp_pct <= 50:
-        color_name = "bright_orange" if hp_pct > 20 else "red"
-    hp_bar = render_bar(hp_pct, 24, color_name, icon=HEART_ICON, icon_color="icon_heart")
-    hp_marker = hp_danger_marker(hp_pct)
-    lvl_up = level_up_marker(level, data)
-    sp_marker = save_point_marker(drive_files, drive_lines, data)
-    line2_parts = [
-        f"  {hp_bar}{hp_marker}",
-        f"{bld}LV {level}{rst} ({EXP_ICON} {exp}){lvl_up}{sp_marker}",
-    ]
-    line2 = "  ".join(line2_parts)
+    # Line 2: HP bar + Cure + Level + EXP + Level-Up + Save Point
+    line2 = fit_segments([
+        (0, seg_hp(hud, hp_w)),
+        (3, seg_spend(hud), " "),
+        (5, seg_cure(hud), " "),
+        (1, f"{bld}LV {level}{rst} ({EXP_ICON} {exp})"),
+        (1, level_up_marker(level, data).lstrip(" "), " "),
+        (1, seg_save_point(hud), " "),
+    ], budget)
 
-    # Line 3: Drive (uncommitted bar) + Munny + Timer + Party
-    drive_width = config.get("drive_bar_width", 14)
-    line3_parts = []
+    # Line 3: Drive (uncommitted bar) + Munny + Focus + Timer + Party + Journal
+    line3_segs = []
     if config.get("show_drive", True):
-        drive_max = config.get("drive_max_lines", 500)
-        drive_src = config.get("drive_source", "lines")
-        if drive_src == "files":
-            drive_val = drive_files
-        elif drive_src == "both":
-            drive_val = drive_files + drive_lines
+        if hud["form"] == "Anti Form" or (hud["form"] and config.get("show_drive_form", True)):
+            form_name, drive_color = hud["form"], hud["form_color"]
         else:
-            drive_val = drive_lines
-        drive_pct = min(100.0, (drive_val / drive_max * 100)) if drive_max > 0 else 0
-        # Anti Form check
-        if is_anti_form(hp_pct, mp_pct, drive_pct):
-            form_name = "Anti Form"
-            drive_color_name = "dim"
-        elif config.get("show_drive_form", True):
-            form_name = resolve_drive_form(data, config)
-            drive_color_name = resolve_drive_form_color_name(data, config)
-        else:
-            form_name = "Drive"
-            drive_color_name = resolve_drive_form_color_name(data, config)
-        drive_bar = render_bar(drive_pct, drive_width, drive_color_name, icon=DRIVE_ICON)
-        dc = ANSI.get(drive_color_name, ANSI["yellow"])
-        line3_parts.append(f"  {drive_bar}  {dc}{FORM_ICON} {form_name}{rst}")
-
-    if config.get("show_munny", True):
-        line3_parts.append(f"{mc}{MUNNY_ICON} {munny}{rst}")
-
-    if config.get("show_timer", True):
-        journey = format_duration(duration_ms)
-        line3_parts.append(f"{bld}{TIMER_ICON} {journey}{rst}")
-
-    agent = data.get("agent") or {}
-    agent_name = agent.get("name", "")
-    if agent_name:
-        line3_parts.append(f"{PARTY_ICON} {agent_name}")
-
-    line3 = "  ".join(line3_parts)
+            form_name, drive_color = "Drive", hud["colors"].get("drive", "magenta")
+        drive_w = config.get("drive_bar_width", 10)
+        if budget is not None and budget < 72:
+            drive_w = min(drive_w, 8)
+        drive_bar = render_bar(hud["drive_pct"], drive_w, drive_color, icon=DRIVE_ICON)
+        dc = ANSI.get(drive_color, ANSI["yellow"])
+        line3_segs.append((0, f"{drive_bar}  {dc}{FORM_ICON} {form_name}{rst}"))
+    else:
+        line3_segs.append((2, seg_form(hud)))
+    line3_segs += [
+        (2, seg_munny(hud)),
+        (4, seg_focus(hud)),
+        (3, seg_timer(hud)),
+        (3, seg_party(hud)),
+        (5, seg_session(hud)),
+        (2, seg_vim(hud)),
+    ]
+    line3 = fit_segments(line3_segs, budget)
 
     return line1 + "\n" + line2 + "\n" + line3
+
+
+# ─── Party Panel (subagentStatusLine) ────────────────────────────
+
+TASK_STATES = {
+    "running": ("▸", "bright_cyan"),   # ▸
+    "completed": ("✓", "green"),       # ✓
+    "failed": ("✗", "red"),            # ✗
+    "killed": ("✗", "dim"),            # ✗
+}
+
+
+def render_party_row(task, config, width=None):
+    """One subagent as a party member: status, name, keyblade, form, MP, label."""
+    rst, bld, dim = ANSI["reset"], ANSI["bold"], ANSI["dim"]
+    glyph, gcolor = TASK_STATES.get(task.get("status"), ("∙", "dim"))
+    name = clean_text(task.get("name") or task.get("agentType") or "Party")
+    segs = [(0, f"{ANSI.get(gcolor, '')}{glyph}{rst} {bld}{PARTY_ICON} {name}{rst}")]
+
+    model = task.get("model")
+    if model:
+        kc = ANSI.get(config.get("colors", {}).get("keyblade", "cyan"), ANSI["cyan"])
+        segs.append((3, f"{kc}{KEYBLADE_ICON}  {resolve_keyblade(model, '', config)}{rst}"))
+
+    effort = task.get("effort")
+    if isinstance(effort, str) and config.get("show_drive_form", True):
+        form = config.get("drive_form_names", {}).get(effort.lower())
+        color = config.get("drive_form_colors", {}).get(effort.lower(), "yellow")
+        if form:
+            segs.append((4, f"{ANSI.get(color, '')}{FORM_ICON} {form.replace(' Form', '')}{rst}"))
+
+    tokens, size = task.get("tokenCount"), task.get("contextWindowSize")
+    if isinstance(tokens, (int, float)) and isinstance(size, (int, float)) and size > 0:
+        mp = max(0.0, 100.0 - tokens / size * 100.0)
+        _, clr = mp_label_and_color(mp, config.get("colors", {}))
+        segs.append((1, render_bar(mp, 6, clr, icon=MP_ICON, icon_color="icon_mp")))
+
+    start = task.get("startTime")
+    if task.get("status") == "running" and isinstance(start, (int, float)):
+        segs.append((5, f"{dim}{TIMER_ICON} {format_duration(max(0, time.time() * 1000 - start))}{rst}"))
+
+    line = fit_segments(segs, width, prefix="")
+    label = clean_text(task.get("label") or task.get("description") or "")
+    if label:
+        room = None if width is None else width - visible_width(line) - 2
+        if room is None or room >= 8:
+            line += f"  {dim}{label if room is None else truncate(label, room)}{rst}"
+    return line
+
+
+def render_party(payload, config):
+    """subagentStatusLine output: one {"id", "content"} JSON line per subagent."""
+    if not config.get("party_panel", True):
+        return []
+    width = payload.get("columns")
+    width = width if isinstance(width, int) and width > 0 else None
+    rows = []
+    for task in payload.get("tasks") or []:
+        if isinstance(task, dict) and task.get("id"):
+            rows.append(json.dumps({"id": task["id"], "content": render_party_row(task, config, width)}))
+    return rows
+
+
+# ─── Settings Registration ───────────────────────────────────────
+
+def _is_keyblade_command(entry):
+    if isinstance(entry, dict):
+        return "keyblade" in str(entry.get("command", ""))
+    return isinstance(entry, str) and "keyblade" in entry
+
+
+def _read_settings(settings_path):
+    """Read settings.json; {} when missing. Invalid JSON raises (never clobber it)."""
+    if not os.path.exists(settings_path):
+        return {}
+    with open(settings_path) as f:
+        settings = json.load(f)
+    if not isinstance(settings, dict):
+        raise ValueError("settings.json is not a JSON object")
+    return settings
+
+
+def _write_settings(settings_path, settings):
+    # Plain write (not rename) so a symlinked settings.json stays a symlink.
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+
+
+def register_settings(settings_path, script_path):
+    """Point statusLine and subagentStatusLine at keyblade.
+
+    Non-keyblade entries are backed up for uninstall to restore. Tweaks on an
+    existing keyblade entry (padding, refreshInterval, ...) are kept.
+    """
+    settings = _read_settings(settings_path)
+    command = f"python3 {shlex.quote(script_path)}"
+    messages = []
+    for key, cmd, defaults in (
+        ("statusLine", command, {"padding": 0, "refreshInterval": 30}),
+        ("subagentStatusLine", f"{command} --party", {}),
+    ):
+        existing = settings.get(key)
+        entry = {"type": "command", "command": cmd}
+        entry.update(defaults)
+        if _is_keyblade_command(existing):
+            if isinstance(existing, dict):
+                entry.update({k: v for k, v in existing.items() if k not in ("type", "command")})
+        elif existing:
+            settings[f"_{key}_backup"] = existing
+            old = existing.get("command", "") if isinstance(existing, dict) else existing
+            messages.append(f"Backed up existing {key}: {old}")
+        settings[key] = entry
+        messages.append(f"{key} registered.")
+    _write_settings(settings_path, settings)
+    return messages
+
+
+def unregister_settings(settings_path):
+    """Remove keyblade's statusLine/subagentStatusLine, restoring any backups."""
+    if not os.path.exists(settings_path):
+        return []
+    settings = _read_settings(settings_path)
+    messages = []
+    for key in ("statusLine", "subagentStatusLine"):
+        backup = settings.pop(f"_{key}_backup", None)
+        if _is_keyblade_command(settings.get(key)):
+            if backup:
+                settings[key] = backup
+                messages.append(f"Restored previous {key}")
+            else:
+                del settings[key]
+                messages.append(f"Removed {key} entry")
+        elif key in settings:
+            messages.append(f"{key} is not keyblade, leaving untouched")
+    _write_settings(settings_path, settings)
+    return messages
+
+
+# ─── Preview ─────────────────────────────────────────────────────
+
+def _preview_scenarios(work_dir, now):
+    """(title, auth, payload) samples covering the HUD's states."""
+    base = {
+        "session_id": "keyblade-preview",
+        "version": "2.1.295",
+        "model": {"id": "claude-opus-5-5", "display_name": "Opus"},
+        "workspace": {"current_dir": work_dir, "project_dir": work_dir, "added_dirs": []},
+        "cost": {"total_cost_usd": 1.84, "total_duration_ms": 2_460_000,
+                 "total_lines_added": 412, "total_lines_removed": 88},
+        "context_window": {"context_window_size": 1_000_000, "remaining_percentage": 72},
+        "effort": {"level": "xhigh"},
+    }
+
+    def sample(**overrides):
+        data = json.loads(json.dumps(base))
+        data.update(overrides)
+        return data
+
+    max_plan = {"method": "claude.ai", "provider": "firstParty", "plan": "max"}
+    return [
+        ("Max subscriber · PR in review · warm cache", max_plan, sample(
+            session_name="statusbar refresh",
+            rate_limits={"five_hour": {"used_percentage": 38, "resets_at": now + 8040},
+                         "seven_day": {"used_percentage": 21, "resets_at": now + 300_000}},
+            pr={"number": 12, "url": "https://github.com/emoralesb05/claude-keyblade-statusbar/pull/12",
+                "review_state": "pending"},
+            prompt_cache={"warm": True, "caching_observed": True, "hit_ratio": 0.91, "expires_at": now + 2520},
+        )),
+        ("API key · paying munny per hit", {"method": "api_key", "provider": "firstParty", "plan": None}, sample(
+            cost={"total_cost_usd": 3.80, "total_duration_ms": 5_400_000,
+                  "total_lines_added": 1210, "total_lines_removed": 340},
+            effort={"level": "high"},
+        )),
+        ("Danger · MP Charge · changes requested", max_plan, sample(
+            rate_limits={"five_hour": {"used_percentage": 88, "resets_at": now + 1500}},
+            context_window={"context_window_size": 200_000, "remaining_percentage": 7},
+            effort={"level": "max"},
+            pr={"number": 12, "review_state": "changes_requested"},
+        )),
+        ("Anti Form · context nearly gone", max_plan, sample(
+            rate_limits={"five_hour": {"used_percentage": 52, "resets_at": now + 4000}},
+            context_window={"context_window_size": 200_000, "remaining_percentage": 3},
+        )),
+        ("Haiku on Bedrock · fast mode · no effort", {"method": None, "provider": "bedrock", "plan": None}, {
+            **sample(model={"id": "claude-haiku-5-5", "display_name": "Haiku"}, fast_mode=True,
+                     agent={"name": "security-reviewer"}),
+            "effort": None,
+        }),
+    ]
+
+
+def preview(args):
+    """Render sample scenarios for each theme in this terminal.
+
+    Usage: keyblade.py --preview [classic|minimal|full_rpg ...] [--width N]
+    Uses your config and the current directory's git state; level-up and save
+    point state go to a throwaway file, not the live one.
+    """
+    global STATE_FILE
+    if "--width" in args:
+        idx = args.index("--width")
+        if idx + 1 < len(args):
+            os.environ["COLUMNS"] = args[idx + 1]
+    themes = [a for a in args if a in RENDERERS] or list(RENDERERS)
+    config = load_config()
+    STATE_FILE = os.path.join(tempfile.mkdtemp(prefix="keyblade_preview_"), "state.json")
+    now = int(time.time())
+    bld, dim, rst = ANSI["bold"], ANSI["dim"], ANSI["reset"]
+    for theme in themes:
+        print(f"\n{bld}═══ {theme} ═══{rst}")
+        for title, auth, data in _preview_scenarios(os.getcwd(), now):
+            print(f"{dim}── {title}{rst}")
+            print(RENDERERS[theme](data, config, auth=auth))
+    party = {"columns": int(os.environ.get("COLUMNS") or 0) or 100, "tasks": [
+        {"id": "a1", "name": "Explore", "status": "running", "model": "claude-haiku-5-5",
+         "effort": "low", "tokenCount": 38_000, "contextWindowSize": 200_000,
+         "startTime": now * 1000 - 95_000, "label": "Searching for statusline payload handling"},
+        {"id": "a2", "name": "code-reviewer", "status": "completed", "model": "claude-opus-5-5",
+         "effort": "xhigh", "tokenCount": 640_000, "contextWindowSize": 1_000_000,
+         "label": "Reviewed keyblade.py: 2 findings"},
+        {"id": "a3", "agentType": "general-purpose", "status": "failed", "model": "claude-sonnet-5-5",
+         "tokenCount": 190_000, "contextWindowSize": 200_000, "label": "Ran out of context"},
+    ]}
+    print(f"\n{bld}═══ party panel (subagentStatusLine) ═══{rst}")
+    for row in render_party(party, config):
+        print(json.loads(row)["content"])
 
 
 # ─── Main ────────────────────────────────────────────────────────
@@ -1109,13 +2000,57 @@ RENDERERS = {
 FALLBACK = f"{ANSI['cyan']}{KEYBLADE_ICON}  Keyblade{ANSI['reset']}"
 
 
-def main():
+def main_party():
+    """subagentStatusLine entry point. Prints nothing on error, which keeps
+    Claude Code's default rows."""
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        config = load_config()
+        for row in render_party(payload, config):
+            print(row)
+    except Exception:
+        pass
+
+
+def main_settings(argv):
+    """--register-settings SETTINGS [SCRIPT] / --unregister-settings SETTINGS"""
+    if len(argv) < 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        if argv[0] == "--register-settings":
+            script = argv[2] if len(argv) > 2 else os.path.abspath(__file__)
+            messages = register_settings(argv[1], script)
+        else:
+            messages = unregister_settings(argv[1])
+    except (OSError, ValueError) as e:
+        print(f"  Error: could not update {argv[1]}: {e}", file=sys.stderr)
+        return 1
+    for message in messages:
+        print(f"  {message}")
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    command = argv[0] if argv else ""
+    if command == "--party":
+        return main_party()
+    if command == "--preview":
+        return preview(argv[1:])
+    if command in ("--register-settings", "--unregister-settings"):
+        return main_settings(argv)
+    if command == "--refresh-auth" and len(argv) > 1:
+        refresh_auth(argv[1], int(argv[2]) if len(argv) > 2 and argv[2].isdigit() else None)
+        return 0
+
     try:
         raw = sys.stdin.read()
         data = json.loads(raw) if raw.strip() else {}
     except (json.JSONDecodeError, ValueError):
         print(FALLBACK)
-        return
+        return 0
 
     config = load_config()
     theme = config.get("theme", "classic")
@@ -1126,7 +2061,8 @@ def main():
         print(output)
     except Exception:
         print(FALLBACK)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

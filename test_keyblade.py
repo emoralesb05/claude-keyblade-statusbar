@@ -1,14 +1,43 @@
 #!/usr/bin/env python3
-"""Tests for keyblade.py — Kingdom Hearts themed statusline."""
+"""Tests for keyblade.py — Kingdom Hearts themed statusline.
 
+Run: python3 -m unittest test_keyblade
+"""
+
+import contextlib
+import io
 import json
 import os
+import re
+import shlex
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 
 # Import from same directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import keyblade
+
+SCRIPT = os.path.join(HERE, "keyblade.py")
+
+# Environment that changes keyblade's behavior; cleared for every test.
+ISOLATED_ENV = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_BASE_URL", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_EFFORT_LEVEL",
+    "CLAUDE_CONFIG_DIR", "COLUMNS", "NO_COLOR", "CLICOLOR", "COLORTERM",
+    "KEYBLADE_STATE_FILE",
+)
+
+_ESCAPES = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip(text):
+    """Remove ANSI colors and OSC 8 links."""
+    return _ESCAPES.sub("", text)
 
 
 def make_data(**overrides):
@@ -35,8 +64,8 @@ def make_data(**overrides):
             "display_name": "Opus",
         },
         "workspace": {
-            "current_dir": "/Users/ed/projects/myapp",
-            "project_dir": "/Users/ed/projects/myapp",
+            "current_dir": "/nonexistent/projects/myapp",
+            "project_dir": "/nonexistent/projects/myapp",
         },
         "session_id": "test-session-123",
         "version": "1.0.0",
@@ -45,7 +74,77 @@ def make_data(**overrides):
     return data
 
 
-class TestKeybladeResolution(unittest.TestCase):
+def git(cwd, *args):
+    """Run git with a fixed identity and no user hooks/signing."""
+    return subprocess.run(
+        ["git", "-c", "user.name=Sora", "-c", "user.email=sora@example.com",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout
+
+
+class KeybladeTestCase(unittest.TestCase):
+    """Isolates every test from the machine: temp state and git cache, no real
+    settings.json, no auth env, no `claude` binary, no terminal width."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = os.path.realpath(self._tmpdir.name)
+        self._env = {k: os.environ.get(k) for k in ISOLATED_ENV}
+        for k in ISOLATED_ENV:
+            os.environ.pop(k, None)
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.tmp, "claude")
+        self._originals = {}
+        self.patch("STATE_FILE", os.path.join(self.tmp, "state.json"))
+        self.patch("GIT_CACHE_DIR", self.tmp)
+        self.patch("_claude_executable", lambda: None)
+        # Run auth refreshes inline instead of in a detached child
+        self.patch("_spawn_auth_refresh", lambda key, ttl: keyblade.refresh_auth(key, ttl))
+        self.patch("ANSI", keyblade._resolve_ansi("truecolor"))
+
+    def tearDown(self):
+        for name, value in self._originals.items():
+            setattr(keyblade, name, value)
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self._tmpdir.cleanup()
+
+    def patch(self, name, value):
+        self._originals.setdefault(name, getattr(keyblade, name))
+        setattr(keyblade, name, value)
+
+    def config(self, **overrides):
+        config = dict(keyblade.DEFAULT_CONFIG)
+        config.update(overrides)
+        return config
+
+    def make_repo(self, name="destiny-islands", commit=True):
+        path = os.path.join(self.tmp, name)
+        os.makedirs(path)
+        git(path, "init", "-q", "-b", "main")
+        if commit:
+            self.write(path, "README.md", "line 1\nline 2\nline 3\n")
+            git(path, "add", "README.md")
+            git(path, "commit", "-q", "-m", "init")
+        return path
+
+    def write(self, repo, rel, content, mode="w"):
+        path = os.path.join(repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, mode) as f:
+            f.write(content)
+        return path
+
+    def repo_data(self, path, **overrides):
+        return make_data(workspace={"current_dir": path, "project_dir": path}, **overrides)
+
+
+# ─── Existing behavior ───────────────────────────────────────────
+
+class TestKeybladeResolution(KeybladeTestCase):
     def test_opus(self):
         config = keyblade.DEFAULT_CONFIG
         result = keyblade.resolve_keyblade("claude-opus-4-6", "Opus", config)
@@ -60,6 +159,10 @@ class TestKeybladeResolution(unittest.TestCase):
         config = keyblade.DEFAULT_CONFIG
         result = keyblade.resolve_keyblade("claude-haiku-4-5", "Haiku", config)
         self.assertEqual(result, "Kingdom Key")
+
+    def test_fable(self):
+        result = keyblade.resolve_keyblade("claude-fable-5-1", "Fable", keyblade.DEFAULT_CONFIG)
+        self.assertEqual(result, "Sweet Memories")
 
     def test_unknown_model(self):
         config = keyblade.DEFAULT_CONFIG
@@ -77,8 +180,12 @@ class TestKeybladeResolution(unittest.TestCase):
         result = keyblade.resolve_keyblade("claude-opus-4-6", "Opus", config)
         self.assertEqual(result, "Oblivion")
 
+    def test_custom_family_key(self):
+        config = self.config(keyblade_names={"mythos": "Kingdom Key D"})
+        self.assertEqual(keyblade.resolve_keyblade("claude-mythos-1", "", config), "Kingdom Key D")
 
-class TestCalculateMP(unittest.TestCase):
+
+class TestCalculateMP(KeybladeTestCase):
     def test_context_remaining(self):
         data = make_data()
         mp = keyblade.calculate_mp(data)
@@ -95,11 +202,28 @@ class TestCalculateMP(unittest.TestCase):
         mp = keyblade.calculate_mp(data)
         self.assertEqual(mp, 100)
 
+    def test_transcript_is_source_of_truth(self):
+        path = os.path.join(self.tmp, "t.jsonl")
+        with open(path, "w") as f:
+            f.write(json.dumps({"message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": 49990}}}) + "\n")
+        data = make_data(transcript_path=path)
+        # 50k of 200k used → 75% left, regardless of the payload's stale value
+        data["context_window"]["remaining_percentage"] = 10
+        self.assertAlmostEqual(keyblade.calculate_mp(data), 75.0)
 
-class TestWorldName(unittest.TestCase):
+    def test_transcript_compact_marker_wins(self):
+        path = os.path.join(self.tmp, "t.jsonl")
+        with open(path, "w") as f:
+            f.write(json.dumps({"message": {"usage": {"input_tokens": 180000}}}) + "\n")
+            f.write(json.dumps({"isCompactSummary": True, "message": {"content": "x" * 40000}}) + "\n")
+        data = make_data(transcript_path=path)
+        # 40k chars ≈ 10k tokens of 200k → 95% left
+        self.assertAlmostEqual(keyblade.calculate_mp(data), 95.0)
+
+
+class TestWorldName(KeybladeTestCase):
     def test_normal_dir(self):
         data = make_data()
-        # world_name will try git commands which may add branch info
         result = keyblade.world_name(data)
         self.assertTrue(result.startswith("myapp"))
 
@@ -132,8 +256,16 @@ class TestWorldName(unittest.TestCase):
         result = keyblade.world_name(data, config)
         self.assertEqual(result, "myapp")
 
+    def test_branch_from_repo(self):
+        repo = self.make_repo()
+        self.assertEqual(keyblade.world_name(self.repo_data(repo)), "destiny-islands ∙ main")
 
-class TestFormatDuration(unittest.TestCase):
+    def test_trailing_slash(self):
+        data = make_data(workspace={"current_dir": "/nonexistent/myapp/"})
+        self.assertEqual(keyblade.world_name(data), "myapp")
+
+
+class TestFormatDuration(KeybladeTestCase):
     def test_seconds(self):
         self.assertEqual(keyblade.format_duration(5000), "5s")
 
@@ -144,7 +276,7 @@ class TestFormatDuration(unittest.TestCase):
         self.assertEqual(keyblade.format_duration(3720000), "1h02m")
 
 
-class TestCalculateLevel(unittest.TestCase):
+class TestCalculateLevel(KeybladeTestCase):
     def test_zero_lines(self):
         data = make_data()
         data["cost"]["total_lines_added"] = 0
@@ -215,7 +347,7 @@ class TestCalculateLevel(unittest.TestCase):
         self.assertEqual(keyblade.calculate_level(data, config), 2)
 
 
-class TestCalculateExp(unittest.TestCase):
+class TestCalculateExp(KeybladeTestCase):
     def test_default_data(self):
         data = make_data()
         # 200 added + 30 removed = 230
@@ -243,7 +375,7 @@ class TestCalculateExp(unittest.TestCase):
         self.assertEqual(keyblade.calculate_exp(data, config), 100)
 
 
-class TestBarRendering(unittest.TestCase):
+class TestBarRendering(KeybladeTestCase):
     def test_full_bar(self):
         bar = keyblade.render_bar(100, 10, "green")
         self.assertIn(keyblade.BAR_FULL, bar)
@@ -280,8 +412,30 @@ class TestBarRendering(unittest.TestCase):
         bar = keyblade.render_bar(-10, 10, "green")
         self.assertIn("0%", bar)
 
+    def test_bar_is_exactly_width_columns(self):
+        for pct in (0, 7, 33, 45, 50, 99, 100):
+            bar = strip(keyblade.render_bar(pct, 12, "green", show_pct=False))
+            self.assertEqual(keyblade.visible_width(bar), 12, pct)
 
-class TestHPColor(unittest.TestCase):
+
+class TestBasicColorBars(KeybladeTestCase):
+    """16-color terminals: the empty track must not share the fill's color."""
+
+    def test_basic_mode_uses_shaded_track(self):
+        self.patch("ANSI", keyblade._resolve_ansi("basic"))
+        bar = keyblade.render_bar(30, 10, "green")
+        self.assertIn(keyblade.BAR_EMPTY, bar)
+        self.assertNotIn("\033[42m", bar)
+
+    def test_basic_mode_has_no_track_backgrounds(self):
+        self.assertFalse([k for k in keyblade.ANSI_BASIC if k.startswith("bg_")])
+
+    def test_truecolor_track_for_every_form_color(self):
+        for color in keyblade.DEFAULT_CONFIG["drive_form_colors"].values():
+            self.assertIn(f"bg_{color}", keyblade.ANSI_TRUECOLOR, color)
+
+
+class TestHPColor(KeybladeTestCase):
     def test_green_above_50(self):
         self.assertEqual(keyblade.hp_color(75), keyblade.ANSI["green"])
 
@@ -291,8 +445,16 @@ class TestHPColor(unittest.TestCase):
     def test_red_below_20(self):
         self.assertEqual(keyblade.hp_color(10), keyblade.ANSI["red"])
 
+    def test_custom_hp_color_when_healthy(self):
+        self.assertEqual(keyblade.hp_bar_color(80, {"hp": "cyan"}), "cyan")
+        self.assertEqual(keyblade.hp_bar_color(30, {"hp": "cyan"}), "bright_orange")
 
-class TestClassicTheme(unittest.TestCase):
+    def test_classic_uses_colors_hp(self):
+        out = keyblade.render_classic(make_data(), self.config(colors=dict(keyblade.DEFAULT_CONFIG["colors"], hp="cyan")))
+        self.assertIn(keyblade.ANSI["cyan"] + keyblade.ANSI["bold"] + keyblade.BAR_FULL, out.split("\n")[1])
+
+
+class TestClassicTheme(KeybladeTestCase):
     def test_renders_two_lines(self):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
@@ -319,8 +481,12 @@ class TestClassicTheme(unittest.TestCase):
         self.assertIn(keyblade.HEART_ICON, output)
         self.assertIn(keyblade.MP_ICON, output)
 
+    def test_party_member_shown(self):
+        out = keyblade.render_classic(make_data(agent={"name": "security-reviewer"}), self.config())
+        self.assertIn("security-reviewer", out)
 
-class TestMinimalTheme(unittest.TestCase):
+
+class TestMinimalTheme(KeybladeTestCase):
     def test_renders_one_line(self):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
@@ -335,7 +501,7 @@ class TestMinimalTheme(unittest.TestCase):
         self.assertIn("Ultima Weapon", output)
 
 
-class TestFullRPGTheme(unittest.TestCase):
+class TestFullRPGTheme(KeybladeTestCase):
     def test_renders_three_lines(self):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
@@ -374,8 +540,15 @@ class TestFullRPGTheme(unittest.TestCase):
         output = keyblade.render_full_rpg(data, config)
         self.assertNotIn(keyblade.PARTY_ICON, output)
 
+    def test_show_drive_false_keeps_form_and_indent(self):
+        out = keyblade.render_full_rpg(make_data(), self.config(show_drive=False))
+        line3 = out.split("\n")[2]
+        self.assertTrue(line3.startswith("  "))
+        self.assertNotIn(keyblade.DRIVE_ICON, line3)
+        self.assertIn("Form", line3)
 
-class TestEdgeCases(unittest.TestCase):
+
+class TestEdgeCases(KeybladeTestCase):
     def test_empty_data(self):
         config = dict(keyblade.DEFAULT_CONFIG)
         # Should not crash with empty data
@@ -390,41 +563,51 @@ class TestEdgeCases(unittest.TestCase):
             "cost": {"total_cost_usd": None, "total_lines_added": None},
             "model": {"id": None, "display_name": None},
             "workspace": {"current_dir": None},
+            "rate_limits": None,
+            "pr": None,
+            "prompt_cache": None,
+            "effort": None,
         }
         config = dict(keyblade.DEFAULT_CONFIG)
         for renderer in [keyblade.render_classic, keyblade.render_minimal, keyblade.render_full_rpg]:
             output = renderer(data, config)
             self.assertIsInstance(output, str)
 
+    def test_malformed_rate_limits(self):
+        data = make_data(rate_limits={"five_hour": "lots", "seven_day": {"used_percentage": None}})
+        for renderer in keyblade.RENDERERS.values():
+            self.assertIsInstance(renderer(data, self.config()), str)
 
-class TestConfigLoading(unittest.TestCase):
+
+class TestConfigLoading(KeybladeTestCase):
+    def write_config(self, cfg):
+        path = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "hooks", "keyblade", "config.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(cfg, f)
+
     def test_defaults_when_no_file(self):
-        # With a nonexistent config dir, should return defaults
-        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
         config = keyblade.load_config()
         self.assertEqual(config["theme"], "classic")
-        self.assertEqual(config["hp_usage_cache_ttl"], 60)
-        del os.environ["CLAUDE_CONFIG_DIR"]
+        self.assertEqual(config["hp_source"], "auto")
+        self.assertEqual(config["drive_max_lines"], 1000)
+
+    def test_nested_dicts_deep_merge(self):
+        self.write_config({"keyblade_names": {"opus": "Oblivion"}, "colors": {"hp": "cyan"}})
+        config = keyblade.load_config()
+        self.assertEqual(config["keyblade_names"]["opus"], "Oblivion")
+        self.assertEqual(config["keyblade_names"]["fable"], "Sweet Memories")
+        self.assertEqual(config["colors"]["mp"], "blue")
+
+    def test_shipped_config_matches_defaults(self):
+        with open(os.path.join(HERE, "config.json")) as f:
+            shipped = json.load(f)
+        self.assertEqual(set(shipped), set(keyblade.DEFAULT_CONFIG))
+        for key, value in shipped.items():
+            self.assertEqual(value, keyblade.DEFAULT_CONFIG[key], key)
 
 
-class TestResolveDriveForm(unittest.TestCase):
-    def setUp(self):
-        # Ensure no env var leaks between tests
-        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
-        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-        # Point config dir to nonexistent path so settings.json isn't read
-        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
-
-    def tearDown(self):
-        if self.orig_env is not None:
-            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
-        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
-            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
-        if self.orig_config_dir is not None:
-            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
-        elif "CLAUDE_CONFIG_DIR" in os.environ:
-            del os.environ["CLAUDE_CONFIG_DIR"]
-
+class TestResolveDriveForm(KeybladeTestCase):
     def test_default_is_limit_form(self):
         data = make_data()
         result = keyblade.resolve_drive_form(data)
@@ -492,22 +675,10 @@ class TestResolveDriveForm(unittest.TestCase):
         self.assertEqual(result, "Limit Form")
 
 
-class TestDriveFormInThemes(unittest.TestCase):
+class TestDriveFormInThemes(KeybladeTestCase):
     def setUp(self):
-        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
-        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+        super().setUp()
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
-
-    def tearDown(self):
-        if self.orig_config_dir is not None:
-            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
-        elif "CLAUDE_CONFIG_DIR" in os.environ:
-            del os.environ["CLAUDE_CONFIG_DIR"]
-        if self.orig_env is not None:
-            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
-        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
-            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
 
     def test_full_rpg_shows_form_name(self):
         data = make_data()
@@ -552,23 +723,13 @@ class TestDriveFormInThemes(unittest.TestCase):
         self.assertIn("Drive", output)
         self.assertNotIn("Valor", output)
 
+    def test_drive_bar_uses_colors_drive_without_form(self):
+        config = self.config(show_drive_form=False)
+        out = keyblade.render_full_rpg(make_data(), config)
+        self.assertIn(keyblade.ANSI["magenta"] + keyblade.FORM_ICON + " Drive", out)
 
-class TestResolveEffortLevel(unittest.TestCase):
-    def setUp(self):
-        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
-        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
 
-    def tearDown(self):
-        if self.orig_env is not None:
-            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
-        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
-            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
-        if self.orig_config_dir is not None:
-            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
-        elif "CLAUDE_CONFIG_DIR" in os.environ:
-            del os.environ["CLAUDE_CONFIG_DIR"]
-
+class TestResolveEffortLevel(KeybladeTestCase):
     def test_default_is_high(self):
         data = make_data()
         self.assertEqual(keyblade.resolve_effort_level(data), "high")
@@ -584,23 +745,47 @@ class TestResolveEffortLevel(unittest.TestCase):
         data["effort"] = "max"
         self.assertEqual(keyblade.resolve_effort_level(data), "max")
 
+    def test_from_settings_json(self):
+        os.makedirs(os.environ["CLAUDE_CONFIG_DIR"])
+        with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json"), "w") as f:
+            json.dump({"effortLevel": "medium"}, f)
+        self.assertEqual(keyblade.resolve_effort_level(make_data()), "medium")
 
-class TestDriveFormColorName(unittest.TestCase):
-    def setUp(self):
-        self.orig_env = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
-        self.orig_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-        os.environ["CLAUDE_CONFIG_DIR"] = "/tmp/nonexistent_keyblade_test"
 
-    def tearDown(self):
-        if self.orig_env is not None:
-            os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = self.orig_env
-        elif "CLAUDE_CODE_EFFORT_LEVEL" in os.environ:
-            del os.environ["CLAUDE_CODE_EFFORT_LEVEL"]
-        if self.orig_config_dir is not None:
-            os.environ["CLAUDE_CONFIG_DIR"] = self.orig_config_dir
-        elif "CLAUDE_CONFIG_DIR" in os.environ:
-            del os.environ["CLAUDE_CONFIG_DIR"]
+class TestEffortFromPayload(KeybladeTestCase):
+    """Claude Code v2.1+ sends effort.level, and omits it for models without effort."""
 
+    def test_dict_level(self):
+        data = make_data(version="2.1.295", effort={"level": "xhigh"})
+        self.assertEqual(keyblade.resolve_drive_form(data), "Master Form")
+
+    def test_absent_on_modern_version_means_no_form(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"  # must not leak in
+        data = make_data(version="2.1.295")
+        self.assertIsNone(keyblade.resolve_effort_level(data))
+        self.assertIsNone(keyblade.resolve_drive_form(data))
+
+    def test_null_level_means_no_form(self):
+        data = make_data(version="2.1.295", effort={"level": None})
+        self.assertIsNone(keyblade.resolve_effort_level(data))
+
+    def test_old_version_still_falls_back(self):
+        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+        self.assertEqual(keyblade.resolve_effort_level(make_data(version="2.0.9")), "max")
+
+    def test_themes_without_effort(self):
+        data = make_data(version="2.1.295", model={"id": "claude-haiku-5-5", "display_name": "Haiku"})
+        self.assertNotIn(keyblade.FORM_ICON, keyblade.render_classic(data, self.config()))
+        self.assertNotIn(keyblade.FORM_ICON, keyblade.render_minimal(data, self.config()))
+        self.assertIn(f"{keyblade.FORM_ICON} Drive", strip(keyblade.render_full_rpg(data, self.config())))
+
+    def test_anti_form_still_shows_without_effort(self):
+        data = make_data(version="2.1.295")
+        data["context_window"]["remaining_percentage"] = 3
+        self.assertIn("Anti Form", keyblade.render_classic(data, self.config()))
+
+
+class TestDriveFormColorName(KeybladeTestCase):
     def test_low_is_red(self):
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "low"
         data = make_data()
@@ -632,14 +817,18 @@ class TestDriveFormColorName(unittest.TestCase):
         config["drive_form_colors"] = {"low": "cyan", "high": "magenta"}
         self.assertEqual(keyblade.resolve_drive_form_color_name(data, config), "cyan")
 
+    def test_no_effort_uses_colors_drive(self):
+        data = make_data(version="2.1.0")
+        self.assertEqual(keyblade.resolve_drive_form_color_name(data), "magenta")
 
-class TestHPDangerMarker(unittest.TestCase):
+
+class TestHPDangerMarker(KeybladeTestCase):
     def test_healthy_no_marker(self):
         self.assertEqual(keyblade.hp_danger_marker(75), "")
 
     def test_warning_marker(self):
         marker = keyblade.hp_danger_marker(35)
-        self.assertIn("\u26a0", marker)
+        self.assertIn("⚠", marker)
 
     def test_danger_marker(self):
         marker = keyblade.hp_danger_marker(10)
@@ -647,72 +836,32 @@ class TestHPDangerMarker(unittest.TestCase):
 
     def test_boundary_50_shows_warning(self):
         marker = keyblade.hp_danger_marker(50)
-        self.assertIn("\u26a0", marker)
+        self.assertIn("⚠", marker)
 
     def test_boundary_20_shows_warning(self):
         marker = keyblade.hp_danger_marker(20)
-        self.assertIn("\u26a0", marker)
+        self.assertIn("⚠", marker)
 
     def test_boundary_19_shows_danger(self):
         marker = keyblade.hp_danger_marker(19)
         self.assertIn("DANGER", marker)
 
 
-class TestColorMode(unittest.TestCase):
+class TestColorMode(KeybladeTestCase):
     def test_no_color_returns_none(self):
-        orig = os.environ.get("NO_COLOR")
         os.environ["NO_COLOR"] = "1"
         self.assertEqual(keyblade._detect_color_mode(), "none")
-        if orig is not None:
-            os.environ["NO_COLOR"] = orig
-        else:
-            del os.environ["NO_COLOR"]
 
     def test_default_is_basic(self):
-        orig_nc = os.environ.get("NO_COLOR")
-        orig_cl = os.environ.get("CLICOLOR")
-        orig_ct = os.environ.get("COLORTERM")
-        if "NO_COLOR" in os.environ:
-            del os.environ["NO_COLOR"]
-        if "CLICOLOR" in os.environ:
-            del os.environ["CLICOLOR"]
-        if "COLORTERM" in os.environ:
-            del os.environ["COLORTERM"]
         self.assertEqual(keyblade._detect_color_mode(), "basic")
-        if orig_nc is not None:
-            os.environ["NO_COLOR"] = orig_nc
-        if orig_cl is not None:
-            os.environ["CLICOLOR"] = orig_cl
-        if orig_ct is not None:
-            os.environ["COLORTERM"] = orig_ct
 
     def test_clicolor_zero_returns_none(self):
-        orig_nc = os.environ.get("NO_COLOR")
-        orig_cl = os.environ.get("CLICOLOR")
-        if "NO_COLOR" in os.environ:
-            del os.environ["NO_COLOR"]
         os.environ["CLICOLOR"] = "0"
         self.assertEqual(keyblade._detect_color_mode(), "none")
-        if orig_nc is not None:
-            os.environ["NO_COLOR"] = orig_nc
-        if orig_cl is not None:
-            os.environ["CLICOLOR"] = orig_cl
-        else:
-            del os.environ["CLICOLOR"]
 
     def test_truecolor_detected(self):
-        orig_nc = os.environ.get("NO_COLOR")
-        orig_ct = os.environ.get("COLORTERM")
-        if "NO_COLOR" in os.environ:
-            del os.environ["NO_COLOR"]
         os.environ["COLORTERM"] = "truecolor"
         self.assertEqual(keyblade._detect_color_mode(), "truecolor")
-        if orig_nc is not None:
-            os.environ["NO_COLOR"] = orig_nc
-        if orig_ct is not None:
-            os.environ["COLORTERM"] = orig_ct
-        else:
-            del os.environ["COLORTERM"]
 
     def test_resolve_ansi_none_blanks_all(self):
         ansi = keyblade._resolve_ansi("none")
@@ -724,8 +873,13 @@ class TestColorMode(unittest.TestCase):
         # True color codes use 38;2;R;G;B format
         self.assertIn("38;2;", ansi["green"])
 
+    def test_no_color_renders_without_escapes(self):
+        self.patch("ANSI", keyblade._resolve_ansi("none"))
+        out = keyblade.render_full_rpg(make_data(), self.config(hyperlinks=False))
+        self.assertNotIn("\033", out.replace("\033[7m", "").replace("\033[27m", ""))
 
-class TestMPChargeState(unittest.TestCase):
+
+class TestMPChargeState(KeybladeTestCase):
     def test_charge_below_10(self):
         self.assertTrue(keyblade.mp_charge_state(5))
 
@@ -776,8 +930,7 @@ class TestMPChargeState(unittest.TestCase):
         self.assertIn("CHARGE", output)
 
 
-
-class TestCriticalHPReverseVideo(unittest.TestCase):
+class TestCriticalHPReverseVideo(KeybladeTestCase):
     def test_reverse_video_below_15(self):
         marker = keyblade.hp_danger_marker(10)
         self.assertIn("DANGER", marker)
@@ -790,20 +943,7 @@ class TestCriticalHPReverseVideo(unittest.TestCase):
         self.assertNotIn("\033[7m", marker)
 
 
-class TestLevelUp(unittest.TestCase):
-    def setUp(self):
-        # Clean state file
-        try:
-            os.remove(keyblade.STATE_FILE)
-        except FileNotFoundError:
-            pass
-
-    def tearDown(self):
-        try:
-            os.remove(keyblade.STATE_FILE)
-        except FileNotFoundError:
-            pass
-
+class TestLevelUp(KeybladeTestCase):
     def test_first_level_triggers_notification(self):
         result = keyblade.check_level_up(1)
         self.assertTrue(result)
@@ -824,7 +964,7 @@ class TestLevelUp(unittest.TestCase):
         self.assertIn("LEVEL UP!", marker)
 
 
-class TestWorldAndBranch(unittest.TestCase):
+class TestWorldAndBranch(KeybladeTestCase):
     def test_world_branch_split(self):
         data = make_data()
         config = dict(keyblade.DEFAULT_CONFIG)
@@ -834,7 +974,7 @@ class TestWorldAndBranch(unittest.TestCase):
         self.assertEqual(branch, "")
 
 
-class TestAntiForm(unittest.TestCase):
+class TestAntiForm(KeybladeTestCase):
     def test_anti_form_low_hp_high_drive(self):
         self.assertTrue(keyblade.is_anti_form(3, 50, 95))
 
@@ -865,19 +1005,7 @@ class TestAntiForm(unittest.TestCase):
         self.assertNotIn("Anti Form", output)
 
 
-class TestSavePoint(unittest.TestCase):
-    def setUp(self):
-        try:
-            os.remove(keyblade.STATE_FILE)
-        except FileNotFoundError:
-            pass
-
-    def tearDown(self):
-        try:
-            os.remove(keyblade.STATE_FILE)
-        except FileNotFoundError:
-            pass
-
+class TestSavePoint(KeybladeTestCase):
     def test_clean_tree_triggers_save_point(self):
         result = keyblade.check_save_point(0, 0)
         self.assertTrue(result)
@@ -899,6 +1027,845 @@ class TestSavePoint(unittest.TestCase):
         keyblade._write_project_state({}, {"save_point": {"clean": True, "ts": 0}})
         result = keyblade.check_save_point(0, 0)
         self.assertFalse(result)
+
+    def test_no_save_point_outside_git(self):
+        # A non-repo looks "clean" (0 files, 0 lines) but isn't a save point
+        out = keyblade.render_classic(make_data(), self.config())
+        self.assertNotIn("SAVE POINT", out)
+
+    def test_save_point_in_clean_repo(self):
+        repo = self.make_repo()
+        self.assertIn("SAVE POINT", keyblade.render_classic(self.repo_data(repo), self.config()))
+
+
+# ─── Text & layout helpers ───────────────────────────────────────
+
+class TestVisibleWidth(KeybladeTestCase):
+    def test_plain(self):
+        self.assertEqual(keyblade.visible_width("Sora"), 4)
+
+    def test_ansi_and_links_are_free(self):
+        text = "\033[1m\033[38;2;1;2;3m" + keyblade.hyperlink("Kairi", "https://example.com") + "\033[0m"
+        self.assertEqual(keyblade.visible_width(text), 5)
+
+    def test_wide_chars(self):
+        self.assertEqual(keyblade.visible_width("「DANGER」"), 10)
+        self.assertEqual(keyblade.visible_width(keyblade.HASTE_ICON), 2)
+
+    def test_truncate(self):
+        self.assertEqual(keyblade.truncate("Riku", 10), "Riku")
+        cut = keyblade.truncate("The World That Never Was", 10)
+        self.assertTrue(cut.endswith("…"))
+        self.assertEqual(keyblade.visible_width(cut), 10)
+
+    def test_clean_text_strips_control_chars(self):
+        self.assertEqual(keyblade.clean_text("a\x1b[31mb\nc\x07"), "a[31mbc")
+
+
+class TestFitSegments(KeybladeTestCase):
+    def test_no_width_joins_everything(self):
+        self.assertEqual(keyblade.fit_segments([(0, "A"), (3, "B"), (1, "C", " ")], None), "  A  B C")
+
+    def test_drops_least_important_first(self):
+        segs = [(0, "AAAA"), (1, "BBBB"), (2, "CCCC")]
+        self.assertEqual(keyblade.fit_segments(segs, 14), "  AAAA  BBBB")
+
+    def test_ties_drop_rightmost(self):
+        segs = [(0, "AAAA"), (2, "BBBB"), (2, "CCCC")]
+        self.assertEqual(keyblade.fit_segments(segs, 14), "  AAAA  BBBB")
+
+    def test_priority_zero_never_drops(self):
+        segs = [(0, "A" * 30), (1, "B")]
+        self.assertEqual(keyblade.fit_segments(segs, 10), "  " + "A" * 30)
+
+    def test_empty_segments_skipped(self):
+        self.assertEqual(keyblade.fit_segments([(0, "A"), (1, ""), (2, "B")], None), "  A  B")
+
+    def test_custom_prefix(self):
+        self.assertEqual(keyblade.fit_segments([(0, "A"), (1, "B")], None, prefix=""), "A  B")
+
+
+class TestLineBudget(KeybladeTestCase):
+    def test_unset_is_unbounded(self):
+        self.assertIsNone(keyblade.line_budget(self.config()))
+
+    def test_zero_or_garbage_is_unbounded(self):
+        for value in ("0", "-5", "wide"):
+            os.environ["COLUMNS"] = value
+            self.assertIsNone(keyblade.line_budget(self.config()), value)
+
+    def test_margin(self):
+        os.environ["COLUMNS"] = "100"
+        self.assertEqual(keyblade.line_budget(self.config()), 100 - keyblade.RIGHT_MARGIN)
+
+    def test_responsive_off(self):
+        os.environ["COLUMNS"] = "40"
+        self.assertIsNone(keyblade.line_budget(self.config(responsive=False)))
+
+    def test_bar_widths_shrink(self):
+        self.assertEqual(keyblade.bar_widths(None), (16, 24))
+        self.assertEqual(keyblade.bar_widths(80), (12, 16))
+        self.assertEqual(keyblade.bar_widths(50), (8, 10))
+
+
+class TestResponsiveLayout(KeybladeTestCase):
+    def rich_data(self):
+        now = time.time()
+        return make_data(
+            version="2.1.295", effort={"level": "xhigh"}, session_name="a long session name for testing",
+            agent={"name": "security-reviewer"},
+            rate_limits={"five_hour": {"used_percentage": 40, "resets_at": now + 3600}},
+            pr={"number": 1234, "url": "https://github.com/o/r/pull/1234", "review_state": "approved"},
+            prompt_cache={"warm": True, "caching_observed": True, "hit_ratio": 0.9, "expires_at": now + 600},
+            workspace={"current_dir": "/nonexistent/a-really-long-project-directory-name"},
+        )
+
+    def test_lines_fit_narrow_terminals(self):
+        for cols in (100, 80, 60, 40):
+            os.environ["COLUMNS"] = str(cols)
+            budget = cols - keyblade.RIGHT_MARGIN
+            for name, renderer in keyblade.RENDERERS.items():
+                for line in renderer(self.rich_data(), self.config()).split("\n"):
+                    width = keyblade.visible_width(line)
+                    self.assertLessEqual(width, max(budget, 40), f"{name} @ {cols}: {strip(line)!r}")
+
+    def test_wide_terminal_keeps_everything(self):
+        os.environ["COLUMNS"] = "300"
+        out = strip(keyblade.render_full_rpg(self.rich_data(), self.config()))
+        for piece in ("#1234", "a-really-long-project-directory-name",
+                      "a long session name", "security-reviewer", keyblade.FOCUS_ICON, keyblade.CURE_ICON):
+            self.assertIn(piece, out)
+
+    def test_narrow_keeps_core_hud(self):
+        os.environ["COLUMNS"] = "50"
+        out = strip(keyblade.render_classic(self.rich_data(), self.config()))
+        self.assertIn(keyblade.MP_ICON, out)
+        self.assertIn(keyblade.HEART_ICON, out)
+        self.assertIn("Ultima Weapon", out)
+
+    def test_long_world_is_shortened_not_dropped(self):
+        os.environ["COLUMNS"] = "70"
+        line1 = strip(keyblade.render_full_rpg(self.rich_data(), self.config()).split("\n")[0])
+        self.assertIn("a-really-long", line1)
+        self.assertIn("…", line1)
+
+
+class TestHyperlinksAndCountdown(KeybladeTestCase):
+    def test_hyperlink(self):
+        self.assertEqual(keyblade.hyperlink("x", "https://a.b"), "\033]8;;https://a.b\ax\033]8;;\a")
+
+    def test_hyperlink_disabled(self):
+        self.assertEqual(keyblade.hyperlink("x", "https://a.b", {"hyperlinks": False}), "x")
+
+    def test_hyperlink_strips_control_chars_from_url(self):
+        self.assertNotIn("\x1b[", keyblade.hyperlink("x", "https://a.b/\x1b[31m"))
+
+    def test_no_url_no_link(self):
+        self.assertEqual(keyblade.hyperlink("x", ""), "x")
+
+    def test_countdown(self):
+        self.assertEqual(keyblade.format_countdown(30), "<1m")
+        self.assertEqual(keyblade.format_countdown(600), "10m")
+        self.assertEqual(keyblade.format_countdown(7500), "2h05m")
+        self.assertEqual(keyblade.format_countdown(3 * 86400 + 4 * 3600 + 59), "3d4h")
+        self.assertEqual(keyblade.format_countdown(-5), "<1m")
+
+
+# ─── HP from plan rate limits ────────────────────────────────────
+
+class TestPlanUsageHP(KeybladeTestCase):
+    def limits(self, five=None, seven=None, resets_in=3600):
+        rl = {}
+        if five is not None:
+            rl["five_hour"] = {"used_percentage": five, "resets_at": time.time() + resets_in}
+        if seven is not None:
+            rl["seven_day"] = {"used_percentage": seven, "resets_at": time.time() + 7 * resets_in}
+        return rl
+
+    def test_auto_uses_payload_rate_limits(self):
+        hp = keyblade.resolve_hp(make_data(rate_limits=self.limits(five=30)), self.config())
+        self.assertAlmostEqual(hp["pct"], 70.0)
+        self.assertEqual(hp["source"], "five_hour")
+        self.assertIsNotNone(hp["resets_at"])
+
+    def test_auto_picks_window_closest_to_cap(self):
+        hp = keyblade.resolve_hp(make_data(rate_limits=self.limits(five=20, seven=70)), self.config())
+        self.assertAlmostEqual(hp["pct"], 30.0)
+        self.assertEqual(hp["source"], "seven_day")
+
+    def test_explicit_windows(self):
+        data = make_data(rate_limits=self.limits(five=20, seven=70))
+        self.assertAlmostEqual(keyblade.calculate_hp(data, self.config(hp_source="5_hour")), 80.0)
+        self.assertAlmostEqual(keyblade.calculate_hp(data, self.config(hp_source="7_day")), 30.0)
+
+    def test_last_known_values_before_first_response(self):
+        # Session start / after /clear: no rate_limits yet → no flash to 100%
+        keyblade.resolve_hp(make_data(rate_limits=self.limits(five=60)), self.config())
+        subscriber = {"method": "claude.ai", "provider": "firstParty", "plan": "max"}
+        hp = keyblade.resolve_hp(make_data(), self.config(), auth=subscriber)
+        self.assertAlmostEqual(hp["pct"], 40.0)
+        self.assertAlmostEqual(keyblade.calculate_hp(make_data(), self.config(hp_source="5_hour")), 40.0)
+
+    def test_rolled_over_window_is_ignored(self):
+        keyblade._write_state({"usage_cache": {"five_hour": {"used": 90.0, "resets_at": time.time() - 10}}})
+        self.assertEqual(keyblade.calculate_hp(make_data(), self.config(hp_source="5_hour")), 100.0)
+
+    def test_legacy_cache_format_is_ignored(self):
+        keyblade._write_state({"usage_cache": {"ts": time.time(), "five_hour": 90.0, "seven_day": 10.0}})
+        self.assertEqual(keyblade.get_plan_usage(make_data()), {})
+
+    def test_api_key_session_uses_cost_budget(self):
+        # Even with a subscription's cached usage around, an API-key session
+        # isn't billed against it
+        keyblade._write_state({"usage_cache": {"five_hour": {"used": 90.0, "resets_at": None}}})
+        api = {"method": "api_key", "provider": "firstParty", "plan": None}
+        hp = keyblade.resolve_hp(make_data(), self.config(hp_budget_usd=5.0), auth=api)
+        self.assertEqual(hp["source"], "cost_budget")
+        self.assertAlmostEqual(hp["pct"], 70.0)  # $1.50 of $5
+
+    def test_unknown_auth_uses_cost_budget(self):
+        self.assertEqual(keyblade.resolve_hp(make_data(), self.config())["source"], "cost_budget")
+
+    def test_subscriber_without_any_data_is_full(self):
+        subscriber = {"method": "claude.ai", "provider": "firstParty", "plan": "pro"}
+        self.assertEqual(keyblade.resolve_hp(make_data(), self.config(), auth=subscriber)["pct"], 100.0)
+
+    def test_spend_limit(self):
+        data = make_data(rate_limits={"spend_limit": {
+            "used_percentage": 62.8, "resets_at": time.time() + 86400, "used_usd": 314.12, "limit_usd": 500}})
+        hp = keyblade.resolve_hp(data, self.config())
+        self.assertAlmostEqual(hp["pct"], 37.2)
+        self.assertEqual(hp["spend"], (314.12, 500))
+        self.assertIn("$314/$500", strip(keyblade.render_classic(data, self.config())))
+
+    def test_spend_limit_without_dollars(self):
+        data = make_data(rate_limits={"spend_limit": {"used_percentage": 10, "resets_at": time.time() + 60}})
+        hp = keyblade.resolve_hp(data, self.config(hp_source="spend_limit"))
+        self.assertEqual((hp["pct"], hp["spend"]), (90.0, None))
+
+    def test_cost_budget(self):
+        self.assertAlmostEqual(keyblade.calculate_hp(make_data(), self.config(hp_source="cost_budget")), 70.0)
+        self.assertEqual(keyblade.calculate_hp(make_data(), self.config(hp_source="cost_budget", hp_budget_usd=0)), 100.0)
+
+    def test_cure_countdown_rendered(self):
+        data = make_data(rate_limits=self.limits(five=30, resets_in=7500))
+        line2 = strip(keyblade.render_classic(data, self.config()).split("\n")[1])
+        self.assertIn(f"{keyblade.CURE_ICON} 2h0", line2)
+        hidden = strip(keyblade.render_classic(data, self.config(show_hp_reset=False)))
+        self.assertNotIn(keyblade.CURE_ICON, hidden)
+
+
+# ─── Auth ────────────────────────────────────────────────────────
+
+class TestAuth(KeybladeTestCase):
+    MAX = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
+           "subscriptionType": "max", "email": "sora@destiny.islands", "orgName": "Destiny Islands"}
+
+    def fake_claude(self, payload, exit_code=0):
+        """Install a fake `claude` that prints `payload` and counts its calls."""
+        path = os.path.join(self.tmp, "bin", "claude")
+        self.calls_file = os.path.join(self.tmp, "claude_calls")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        body = payload if isinstance(payload, str) else json.dumps(payload)
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\necho \"$@\" >> {shlex.quote(self.calls_file)}\n"
+                    f"cat <<'EOF'\n{body}\nEOF\nexit {exit_code}\n")
+        os.chmod(path, 0o755)
+        os.environ["CLAUDE_CODE_EXECPATH"] = path
+        self.patch("_claude_executable", self._originals["_claude_executable"])
+        return path
+
+    def calls(self):
+        try:
+            with open(self.calls_file) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def test_run_auth_status_keeps_no_identity(self):
+        self.fake_claude(self.MAX)
+        status = keyblade._run_auth_status()
+        self.assertEqual(status["authMethod"], "claude.ai")
+        self.assertEqual(status["subscriptionType"], "max")
+        self.assertNotIn("email", status)
+        self.assertNotIn("orgName", status)
+        self.assertEqual(self.calls(), ["auth status --json"])
+
+    def test_resolve_caches_per_auth_environment(self):
+        self.fake_claude(self.MAX)
+        auth = keyblade.resolve_auth(make_data(), self.config())
+        self.assertEqual(auth, {"method": "claude.ai", "provider": "firstParty", "plan": "max"})
+        keyblade.resolve_auth(make_data(session_id="after-clear"), self.config())
+        self.assertEqual(len(self.calls()), 1)
+        with open(keyblade.STATE_FILE) as f:
+            self.assertNotIn("sora@", f.read())
+
+    def test_expired_cache_refreshes(self):
+        self.fake_claude(self.MAX)
+        keyblade.resolve_auth(make_data(), self.config(auth_cache_ttl=600))
+        state = keyblade._read_state()
+        for entry in state["auth_cache"].values():
+            entry["ts"] = 0
+        keyblade._write_state(state)
+        keyblade.resolve_auth(make_data(), self.config(auth_cache_ttl=600))
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_failed_refresh_keeps_last_status(self):
+        self.fake_claude(self.MAX)
+        keyblade.resolve_auth(make_data(), self.config())
+        self.fake_claude("not json", exit_code=1)
+        key = keyblade._auth_fingerprint()
+        entry = keyblade.refresh_auth(key, 600)
+        self.assertEqual(entry["status"]["subscriptionType"], "max")
+        self.assertLess(entry["ts"], time.time() - 500)  # retries within about a minute
+
+    def test_refresh_backoff_avoids_stampede(self):
+        calls = []
+        self.patch("_claude_executable", lambda: "/fake/claude")
+        self.patch("_spawn_auth_refresh", lambda key, ttl: calls.append(key))
+        keyblade.resolve_auth(make_data(), self.config())
+        keyblade.resolve_auth(make_data(), self.config())
+        self.assertEqual(len(calls), 1)
+
+    def test_api_key_badge(self):
+        self.fake_claude({"loggedIn": True, "authMethod": "api_key", "apiProvider": "firstParty",
+                          "apiKeySource": "ANTHROPIC_API_KEY"})
+        out = strip(keyblade.render_classic(make_data(), self.config()))
+        self.assertIn(f"{keyblade.AUTH_ICON} API", out)
+
+    def test_payload_rate_limits_prove_subscription(self):
+        self.fake_claude({"loggedIn": True, "authMethod": "api_key", "apiProvider": "firstParty"})
+        data = make_data(rate_limits={"five_hour": {"used_percentage": 5, "resets_at": time.time() + 60}})
+        self.assertEqual(keyblade.resolve_auth(data, self.config())["method"], "claude.ai")
+
+    def test_env_fallback(self):
+        cases = [
+            ({"ANTHROPIC_API_KEY": "sk-test"}, {"authMethod": "api_key", "apiProvider": "firstParty"}),
+            ({"CLAUDE_CODE_USE_BEDROCK": "1"}, {"apiProvider": "bedrock"}),
+            ({"CLAUDE_CODE_USE_VERTEX": "true"}, {"apiProvider": "vertex"}),
+            ({"CLAUDE_CODE_USE_BEDROCK": "0"}, None),
+            ({"CLAUDE_CODE_OAUTH_TOKEN": "tok"}, {"authMethod": "oauth_token", "apiProvider": "firstParty"}),
+            ({}, None),
+        ]
+        for env, expected in cases:
+            for var in keyblade.AUTH_ENV_VARS:
+                os.environ.pop(var, None)
+            os.environ.update(env)
+            self.assertEqual(keyblade._auth_from_env(), expected, env)
+
+    def test_api_key_helper_from_settings(self):
+        os.makedirs(os.environ["CLAUDE_CONFIG_DIR"])
+        with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "settings.json"), "w") as f:
+            json.dump({"apiKeyHelper": "~/bin/get-key"}, f)
+        self.assertEqual(keyblade._auth_from_env()["authMethod"], "api_key_helper")
+
+    def test_fingerprint_tracks_auth_env_not_values(self):
+        base = keyblade._auth_fingerprint()
+        os.environ["ANTHROPIC_API_KEY"] = "sk-one"
+        with_key = keyblade._auth_fingerprint()
+        os.environ["ANTHROPIC_API_KEY"] = "sk-two"
+        self.assertNotEqual(base, with_key)
+        self.assertEqual(with_key, keyblade._auth_fingerprint())
+
+    def test_executable_resolution(self):
+        self.patch("_claude_executable", self._originals["_claude_executable"])
+        fake = self.fake_claude(self.MAX)
+        self.assertEqual(keyblade._claude_executable(), fake)
+        os.environ["CLAUDE_CODE_EXECPATH"] = "/usr/bin/node"
+        self.assertNotEqual(keyblade._claude_executable(), "/usr/bin/node")
+
+    def test_badges(self):
+        cases = [
+            ({"method": "claude.ai", "provider": "firstParty", "plan": "max"}, ("Max", "bright_cyan")),
+            ({"method": "claude.ai", "provider": "firstParty", "plan": "claude_enterprise"}, ("Enterprise", "bright_cyan")),
+            ({"method": "claude.ai", "provider": "firstParty", "plan": None}, ("Claude.ai", "bright_cyan")),
+            ({"method": "api_key", "provider": "firstParty"}, ("API", "bright_orange")),
+            ({"method": "api_key_helper", "provider": "firstParty"}, ("API", "bright_orange")),
+            ({"method": "oauth_token", "provider": "firstParty"}, ("OAuth", "bright_cyan")),
+            ({"method": None, "provider": "bedrock"}, ("Bedrock", "white")),
+            ({"method": None, "provider": "gateway"}, ("Gateway", "white")),
+            ({"method": None, "provider": None}, (None, None)),
+            (None, (None, None)),
+        ]
+        for auth, expected in cases:
+            self.assertEqual(keyblade.auth_badge(auth), expected, auth)
+
+    def test_show_auth_false(self):
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        out = keyblade.render_classic(make_data(), self.config(show_auth=False))
+        self.assertNotIn(keyblade.AUTH_ICON, out)
+
+    def test_subscription_detection(self):
+        self.assertTrue(keyblade.is_subscription({"method": "claude.ai", "provider": "firstParty"}))
+        self.assertTrue(keyblade.is_subscription({"method": "oauth_token", "provider": None}))
+        self.assertFalse(keyblade.is_subscription({"method": "api_key", "provider": "firstParty"}))
+        self.assertFalse(keyblade.is_subscription({"method": "claude.ai", "provider": "bedrock"}))
+        self.assertFalse(keyblade.is_subscription(None))
+
+
+# ─── Git ─────────────────────────────────────────────────────────
+
+class TestGitInfo(KeybladeTestCase):
+    def info(self, path, **config):
+        return keyblade.git_info(self.repo_data(path), self.config(git_cache_ttl=0, **config))
+
+    def test_clean_repo(self):
+        info = self.info(self.make_repo())
+        self.assertEqual((info["branch"], info["files"], info["lines"]), ("main", 0, 0))
+        self.assertEqual(len(info["head"]), 40)
+
+    def test_modified_tracked_file(self):
+        repo = self.make_repo()
+        self.write(repo, "README.md", "line 1\nchanged\nline 3\nline 4\n")
+        info = self.info(repo)
+        self.assertEqual(info["files"], 1)
+        self.assertEqual(info["lines"], 3)  # +2 -1
+
+    def test_staged_and_unstaged_counted_against_head(self):
+        repo = self.make_repo()
+        self.write(repo, "README.md", "line 1\nline 2\nline 3\nstaged\n")
+        git(repo, "add", "README.md")
+        self.write(repo, "README.md", "line 1\nline 2\nline 3\nstaged\nunstaged\n")
+        self.assertEqual(self.info(repo)["lines"], 2)
+
+    def test_untracked_files_from_a_subdirectory(self):
+        repo = self.make_repo()
+        os.makedirs(os.path.join(repo, "src", "deep"))
+        self.write(repo, "src/deep/new.py", "a\nb\nc\n")
+        self.write(repo, "top.txt", "x\n")
+        info = keyblade.git_info(self.repo_data(os.path.join(repo, "src")), self.config(git_cache_ttl=0))
+        self.assertEqual((info["files"], info["lines"], info["untracked"]), (2, 4, 2))
+
+    def test_exclude_untracked(self):
+        repo = self.make_repo()
+        self.write(repo, "new.txt", "a\nb\n")
+        info = self.info(repo, drive_include_untracked=False)
+        self.assertEqual((info["files"], info["lines"]), (0, 0))
+
+    def test_binary_untracked_counts_no_lines(self):
+        repo = self.make_repo()
+        self.write(repo, "blob.bin", b"\x00\x01\n\n\n", mode="wb")
+        info = self.info(repo)
+        self.assertEqual((info["files"], info["lines"]), (1, 0))
+
+    def test_rename_parsed_once(self):
+        repo = self.make_repo()
+        git(repo, "mv", "README.md", "GUIDE.md")
+        self.write(repo, "other.txt", "1\n")
+        info = self.info(repo)
+        self.assertEqual(info["files"], 2)
+
+    def test_detached_head_shows_short_sha(self):
+        repo = self.make_repo()
+        sha = git(repo, "rev-parse", "HEAD").strip()
+        git(repo, "checkout", "-q", "--detach")
+        self.assertEqual(self.info(repo)["branch"], sha[:7])
+
+    def test_repo_without_commits(self):
+        repo = self.make_repo(commit=False)
+        self.write(repo, "a.txt", "1\n2\n")
+        git(repo, "add", "a.txt")
+        info = self.info(repo)
+        self.assertEqual((info["branch"], info["head"], info["lines"]), ("main", "", 2))
+
+    def test_ahead_of_upstream(self):
+        origin = self.make_repo("origin")
+        clone = os.path.join(self.tmp, "clone")
+        git(self.tmp, "clone", "-q", origin, clone)
+        self.write(clone, "new.txt", "1\n")
+        git(clone, "add", "new.txt")
+        git(clone, "commit", "-q", "-m", "ahead")
+        info = self.info(clone)
+        self.assertEqual((info["ahead"], info["behind"]), (1, 0))
+        line1 = strip(keyblade.render_classic(self.repo_data(clone), self.config()).split("\n")[0])
+        self.assertIn("↑1", line1)
+
+    def test_not_a_repo(self):
+        plain = os.path.join(self.tmp, "plain")
+        os.makedirs(plain)
+        self.assertIsNone(self.info(plain))
+        self.assertEqual(keyblade.calculate_drive(self.repo_data(plain)), (0, 0))
+
+    def test_cache_ttl(self):
+        repo = self.make_repo()
+        data, cfg = self.repo_data(repo), self.config(git_cache_ttl=60)
+        self.assertEqual(keyblade.git_info(data, cfg)["files"], 0)
+        self.write(repo, "new.txt", "1\n")
+        self.assertEqual(keyblade.git_info(data, cfg)["files"], 0)  # cached
+        self.assertEqual(keyblade.git_info(data, self.config(git_cache_ttl=0))["files"], 1)
+
+    def test_calculate_drive(self):
+        repo = self.make_repo()
+        self.write(repo, "new.txt", "1\n2\n")
+        self.assertEqual(keyblade.calculate_drive(self.repo_data(repo), self.config(git_cache_ttl=0)), (1, 2))
+
+    def test_status_does_not_take_index_lock(self):
+        # A held index.lock (e.g. Claude mid-commit) must not break the statusline
+        repo = self.make_repo()
+        open(os.path.join(repo, ".git", "index.lock"), "w").close()
+        self.write(repo, "README.md", "changed\n")
+        info = self.info(repo)
+        self.assertEqual(info["files"], 1)
+
+
+class TestLevelSources(KeybladeTestCase):
+    def commit(self, repo, name):
+        self.write(repo, name, "x\n")
+        git(repo, "add", name)
+        git(repo, "commit", "-q", "-m", name)
+
+    def test_commits_since_session_start(self):
+        repo = self.make_repo()
+        data, cfg = self.repo_data(repo), self.config(level_source="commits", level_per=1, git_cache_ttl=0)
+        self.assertEqual(keyblade.calculate_exp(data, cfg), 0)  # anchors HEAD
+        self.commit(repo, "a.txt")
+        self.commit(repo, "b.txt")
+        self.assertEqual(keyblade.calculate_exp(data, cfg), 2)
+        self.assertEqual(keyblade.calculate_level(data, cfg), 3)
+
+    def test_files_touched_since_session_start(self):
+        repo = self.make_repo()
+        data, cfg = self.repo_data(repo), self.config(level_source="files", git_cache_ttl=0)
+        self.assertEqual(keyblade.calculate_exp(data, cfg), 0)
+        self.commit(repo, "a.txt")                         # committed this session
+        self.write(repo, "README.md", "edited\n")          # modified
+        self.write(repo, "new.txt", "1\n")                 # untracked
+        self.assertEqual(keyblade.calculate_exp(data, cfg), 3)
+
+    def test_new_session_starts_over(self):
+        repo = self.make_repo()
+        cfg = self.config(level_source="commits", git_cache_ttl=0)
+        keyblade.calculate_exp(self.repo_data(repo), cfg)
+        self.commit(repo, "a.txt")
+        self.assertEqual(keyblade.calculate_exp(self.repo_data(repo, session_id="new"), cfg), 0)
+
+    def test_outside_git(self):
+        self.assertEqual(keyblade.calculate_exp(make_data(), self.config(level_source="commits")), 0)
+
+
+class TestWorldSegments(KeybladeTestCase):
+    def line1(self, data, **cfg):
+        return keyblade.render_classic(data, self.config(**cfg)).split("\n")[0]
+
+    def test_repo_link_with_branch(self):
+        repo = self.make_repo()
+        data = self.repo_data(repo)
+        data["workspace"]["repo"] = {"host": "github.com", "owner": "sora", "name": "destiny"}
+        self.assertIn("\033]8;;https://github.com/sora/destiny/tree/main\a", self.line1(data))
+
+    def test_repo_url_hosts(self):
+        data = {"workspace": {"repo": {"host": "gitlab.com", "owner": "group/sub", "name": "r"}}}
+        self.assertEqual(keyblade.repo_url(data, "feat/x"), "https://gitlab.com/group/sub/r/-/tree/feat/x")
+        data["workspace"]["repo"]["host"] = "git.example.com"
+        self.assertEqual(keyblade.repo_url(data, "main"), "https://git.example.com/group/sub/r")
+        self.assertEqual(keyblade.repo_url({}, "main"), "")
+
+    def test_worktree_marker(self):
+        data = make_data(worktree={"name": "my-feature", "path": "/x"})
+        self.assertIn(f"{keyblade.WORKTREE_ICON} my-feature", strip(self.line1(data)))
+        data = make_data(workspace={"current_dir": "/nonexistent/wt", "git_worktree": "feature-xyz"})
+        self.assertIn("feature-xyz", strip(self.line1(data)))
+        self.assertNotIn("feature-xyz", strip(self.line1(data, show_worktree=False)))
+
+    def test_added_dirs(self):
+        data = make_data()
+        data["workspace"]["added_dirs"] = ["/a", "/b"]
+        self.assertIn("myapp +2", strip(self.line1(data)))
+
+    def test_show_world_false(self):
+        self.assertNotIn(keyblade.WORLD_ICON, self.line1(make_data(), show_world=False))
+
+
+class TestPRBadge(KeybladeTestCase):
+    def line1(self, pr, **cfg):
+        return keyblade.render_classic(make_data(pr=pr), self.config(**cfg)).split("\n")[0]
+
+    def test_states(self):
+        for state, glyph in (("approved", "✓"), ("changes_requested", "✗"),
+                             ("pending", "○"), ("draft", "◌")):
+            self.assertIn(f"#7 {glyph}", strip(self.line1({"number": 7, "review_state": state})), state)
+
+    def test_no_state(self):
+        self.assertIn("#7", strip(self.line1({"number": 7})))
+
+    def test_link(self):
+        out = self.line1({"number": 7, "url": "https://github.com/o/r/pull/7"})
+        self.assertIn("\033]8;;https://github.com/o/r/pull/7\a#7", out)
+        self.assertNotIn("\033]8;;https://github.com/o/r/pull/7", self.line1(
+            {"number": 7, "url": "https://github.com/o/r/pull/7"}, hyperlinks=False))
+
+    def test_gitlab_merge_request(self):
+        self.assertIn("!42", strip(self.line1({"number": 42, "kind": "mr"})))
+
+    def test_hidden(self):
+        self.assertNotIn("#7", strip(self.line1({"number": 7}, show_pr=False)))
+        self.assertNotIn("#", strip(self.line1({})))
+
+
+class TestSegments(KeybladeTestCase):
+    def test_fast_mode(self):
+        out = keyblade.render_classic(make_data(fast_mode=True), self.config())
+        self.assertIn(keyblade.HASTE_ICON, out)
+        self.assertNotIn(keyblade.HASTE_ICON, keyblade.render_classic(
+            make_data(fast_mode=True), self.config(show_fast_mode=False)))
+
+    def test_session_name_sanitized(self):
+        out = keyblade.render_full_rpg(make_data(session_name="evil\x1b]0;pwned\x07name"), self.config())
+        self.assertIn("evil]0;pwnedname", strip(out))
+        self.assertNotIn("\x1b]0;", out)
+
+    def test_session_name_truncated(self):
+        out = strip(keyblade.render_full_rpg(make_data(session_name="x" * 80), self.config()))
+        self.assertIn("x" * 27 + "…", out)
+
+    def test_focus_gauge(self):
+        warm = {"warm": True, "caching_observed": True, "hit_ratio": 0.914, "expires_at": time.time() + 600}
+        out = strip(keyblade.render_full_rpg(make_data(prompt_cache=warm), self.config()))
+        self.assertIn(f"{keyblade.FOCUS_ICON} 91% 9m", out)
+        cold = dict(warm, warm=False, expires_at=None)
+        self.assertIn(f"{keyblade.FOCUS_ICON} 91% cold",
+                      strip(keyblade.render_full_rpg(make_data(prompt_cache=cold), self.config())))
+        off = dict(warm, caching_observed=False)
+        self.assertNotIn(keyblade.FOCUS_ICON, keyblade.render_full_rpg(make_data(prompt_cache=off), self.config()))
+        self.assertNotIn(keyblade.FOCUS_ICON, keyblade.render_full_rpg(
+            make_data(prompt_cache=warm), self.config(show_focus=False)))
+
+    def test_vim_mode_opt_in(self):
+        data = make_data(vim={"mode": "NORMAL"})
+        self.assertNotIn("NORMAL", keyblade.render_classic(data, self.config()))
+        self.assertIn("-- NORMAL --", strip(keyblade.render_classic(data, self.config(show_vim_mode=True))))
+
+    def test_party_hidden_by_config(self):
+        data = make_data(agent={"name": "security-reviewer"})
+        self.assertNotIn("security-reviewer", keyblade.render_classic(data, self.config(show_party=False)))
+
+
+# ─── Party panel ─────────────────────────────────────────────────
+
+class TestPartyPanel(KeybladeTestCase):
+    def task(self, **overrides):
+        task = {"id": "t1", "name": "Explore", "type": "local_agent", "status": "running",
+                "description": "Find the bug", "label": "Searching keyblade.py for payload handling",
+                "startTime": time.time() * 1000 - 65_000, "model": "claude-haiku-5-5", "effort": "low",
+                "contextWindowSize": 200_000, "tokenCount": 50_000, "tokenSamples": [1, 2], "cwd": "/x"}
+        task.update(overrides)
+        return task
+
+    def rows(self, tasks, columns=120, **cfg):
+        return [json.loads(r) for r in keyblade.render_party({"columns": columns, "tasks": tasks}, self.config(**cfg))]
+
+    def test_row_contents(self):
+        (row,) = self.rows([self.task()])
+        self.assertEqual(row["id"], "t1")
+        content = strip(row["content"])
+        for piece in ("▸", "Explore", "Kingdom Key", "Valor", "75%", "1m05s", "Searching"):
+            self.assertIn(piece, content)
+
+    def test_status_glyphs(self):
+        for status, glyph in (("completed", "✓"), ("failed", "✗"), ("killed", "✗")):
+            (row,) = self.rows([self.task(status=status)])
+            self.assertTrue(strip(row["content"]).startswith(glyph), status)
+
+    def test_fits_columns_and_truncates_label(self):
+        for columns in (100, 60, 40):
+            (row,) = self.rows([self.task(label="L" * 200)], columns=columns)
+            self.assertLessEqual(keyblade.visible_width(row["content"]), columns)
+        (row,) = self.rows([self.task(label="L" * 200)], columns=100)
+        self.assertIn("…", row["content"])
+
+    def test_tasks_without_id_skipped(self):
+        self.assertEqual(len(self.rows([self.task(), {"name": "no id"}, "junk"])), 1)
+
+    def test_numeric_effort_and_missing_model(self):
+        (row,) = self.rows([self.task(effort=4096, model=None, contextWindowSize=None, agentType="Plan", name=None)])
+        content = strip(row["content"])
+        self.assertIn("Plan", content)
+        self.assertNotIn(keyblade.FORM_ICON, content)
+        self.assertNotIn(keyblade.KEYBLADE_ICON, content)
+
+    def test_disabled(self):
+        self.assertEqual(self.rows([self.task()], party_panel=False), [])
+
+    def test_name_sanitized(self):
+        (row,) = self.rows([self.task(name="evil\x1b[2Jname")])
+        self.assertNotIn("\x1b[2J", row["content"])
+
+
+# ─── State & settings ────────────────────────────────────────────
+
+class TestStateFile(KeybladeTestCase):
+    def test_round_trip_without_leftovers(self):
+        keyblade._write_state({"a": 1})
+        self.assertEqual(keyblade._read_state(), {"a": 1})
+        self.assertEqual([f for f in os.listdir(self.tmp) if f.startswith(".keyblade.")], [])
+
+    def test_corrupt_state_reads_empty(self):
+        with open(keyblade.STATE_FILE, "w") as f:
+            f.write("{not json")
+        self.assertEqual(keyblade._read_state(), {})
+
+    def test_projects_keyed_by_full_path(self):
+        a = make_data(workspace={"current_dir": "/work/a/app"})
+        b = make_data(workspace={"current_dir": "/work/b/app"})
+        keyblade._write_project_state(a, {"level_up": {"level": 9, "ts": 0}})
+        self.assertEqual(keyblade._read_project_state(b), {})
+
+    def test_prune_keeps_newest(self):
+        entries = {str(i): {"ts": i} for i in range(30)}
+        kept = keyblade._prune(entries, keep=5)
+        self.assertEqual(sorted(kept, key=int), ["25", "26", "27", "28", "29"])
+
+
+class TestSettingsRegistration(KeybladeTestCase):
+    def setUp(self):
+        super().setUp()
+        self.settings = os.path.join(self.tmp, "settings.json")
+
+    def read(self):
+        with open(self.settings) as f:
+            return json.load(f)
+
+    def save(self, obj):
+        with open(self.settings, "w") as f:
+            json.dump(obj, f)
+
+    def test_fresh_install(self):
+        keyblade.register_settings(self.settings, "/opt/keyblade/keyblade.py")
+        s = self.read()
+        self.assertEqual(s["statusLine"], {"type": "command", "command": "python3 /opt/keyblade/keyblade.py",
+                                           "padding": 0, "refreshInterval": 30})
+        self.assertEqual(s["subagentStatusLine"], {"type": "command",
+                                                   "command": "python3 /opt/keyblade/keyblade.py --party"})
+
+    def test_path_with_spaces_is_quoted(self):
+        keyblade.register_settings(self.settings, "/Users/a b/keyblade.py")
+        self.assertEqual(self.read()["statusLine"]["command"], "python3 '/Users/a b/keyblade.py'")
+
+    def test_backs_up_and_restores_other_entries(self):
+        self.save({"model": "opus", "statusLine": {"type": "command", "command": "~/mine.sh"},
+                   "subagentStatusLine": {"type": "command", "command": "~/agents.sh"}})
+        keyblade.register_settings(self.settings, "/k/keyblade.py")
+        s = self.read()
+        self.assertEqual(s["_statusLine_backup"]["command"], "~/mine.sh")
+        self.assertEqual(s["_subagentStatusLine_backup"]["command"], "~/agents.sh")
+        keyblade.unregister_settings(self.settings)
+        self.assertEqual(self.read(), {"model": "opus", "statusLine": {"type": "command", "command": "~/mine.sh"},
+                                       "subagentStatusLine": {"type": "command", "command": "~/agents.sh"}})
+
+    def test_reinstall_keeps_user_tweaks(self):
+        self.save({"statusLine": {"type": "command", "command": "python3 /old/keyblade.py",
+                                  "padding": 2, "refreshInterval": 10, "hideVimModeIndicator": True}})
+        keyblade.register_settings(self.settings, "/new/keyblade.py")
+        sl = self.read()["statusLine"]
+        self.assertEqual(sl["command"], "python3 /new/keyblade.py")
+        self.assertEqual((sl["padding"], sl["refreshInterval"], sl["hideVimModeIndicator"]), (2, 10, True))
+        self.assertNotIn("_statusLine_backup", self.read())
+
+    def test_upgrade_adds_refresh_interval(self):
+        self.save({"statusLine": {"type": "command", "command": "python3 /k/keyblade.py", "padding": 0}})
+        keyblade.register_settings(self.settings, "/k/keyblade.py")
+        self.assertEqual(self.read()["statusLine"]["refreshInterval"], 30)
+
+    def test_unregister_leaves_foreign_entries(self):
+        self.save({"statusLine": {"type": "command", "command": "~/mine.sh"}})
+        keyblade.unregister_settings(self.settings)
+        self.assertEqual(self.read()["statusLine"]["command"], "~/mine.sh")
+
+    def test_invalid_json_is_never_clobbered(self):
+        with open(self.settings, "w") as f:
+            f.write("{oops")
+        with self.assertRaises(ValueError):
+            keyblade.register_settings(self.settings, "/k/keyblade.py")
+        with open(self.settings) as f:
+            self.assertEqual(f.read(), "{oops")
+
+    def test_cli(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(keyblade.main(["--register-settings", self.settings, "/k/keyblade.py"]), 0)
+            self.assertIn("keyblade", self.read()["statusLine"]["command"])
+            self.assertEqual(keyblade.main(["--unregister-settings", self.settings]), 0)
+            self.assertEqual(self.read(), {})
+            self.assertEqual(keyblade.main(["--register-settings"]), 2)
+        self.assertIn("statusLine registered.", out.getvalue())
+        self.assertIn("--register-settings", err.getvalue())
+
+
+# ─── End to end (subprocess, like Claude Code runs it) ───────────
+
+class TestCommandLine(KeybladeTestCase):
+    def run_script(self, args=(), stdin="", **env):
+        fake = os.path.join(self.tmp, "bin", "claude")
+        os.makedirs(os.path.dirname(fake), exist_ok=True)
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\necho \'{"loggedIn": true, "authMethod": "claude.ai", '
+                    '"apiProvider": "firstParty", "subscriptionType": "pro"}\'\n')
+        os.chmod(fake, 0o755)
+        full_env = {k: v for k, v in os.environ.items() if k not in ISOLATED_ENV}
+        full_env.update({
+            "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "claude"),
+            "KEYBLADE_STATE_FILE": os.path.join(self.tmp, "cli_state.json"),
+            "CLAUDE_CODE_EXECPATH": fake,
+            "TMPDIR": self.tmp,
+            "COLORTERM": "truecolor",
+        })
+        full_env.update(env)
+        return subprocess.run([sys.executable, SCRIPT, *args], input=stdin, capture_output=True,
+                              text=True, env=full_env, timeout=30)
+
+    def test_statusline(self):
+        r = self.run_script(stdin=json.dumps(make_data(version="2.1.295", effort={"level": "max"})))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = strip(r.stdout)
+        self.assertEqual(len(out.rstrip("\n").split("\n")), 2)
+        self.assertIn("Ultima Weapon", out)
+        self.assertIn("Final Form", out)
+
+    def test_theme_from_config(self):
+        cfg = os.path.join(self.tmp, "claude", "hooks", "keyblade", "config.json")
+        os.makedirs(os.path.dirname(cfg))
+        with open(cfg, "w") as f:
+            json.dump({"theme": "full_rpg"}, f)
+        r = self.run_script(stdin=json.dumps(make_data()))
+        self.assertEqual(len(r.stdout.rstrip("\n").split("\n")), 3)
+
+    def test_respects_columns(self):
+        r = self.run_script(stdin=json.dumps(make_data(session_name="x" * 50)), COLUMNS="50")
+        for line in r.stdout.rstrip("\n").split("\n"):
+            self.assertLessEqual(keyblade.visible_width(line), 46)
+
+    def test_bad_json_prints_fallback(self):
+        r = self.run_script(stdin="{nope")
+        self.assertEqual((r.returncode, strip(r.stdout).strip()), (0, f"{keyblade.KEYBLADE_ICON}  Keyblade"))
+
+    def test_empty_stdin(self):
+        r = self.run_script(stdin="")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Starlight", r.stdout)
+
+    def test_party_mode(self):
+        payload = {"columns": 80, "tasks": [{"id": "abc", "name": "Explore", "status": "running"}]}
+        r = self.run_script(["--party"], stdin=json.dumps(payload))
+        rows = [json.loads(l) for l in r.stdout.splitlines()]
+        self.assertEqual([row["id"] for row in rows], ["abc"])
+
+    def test_party_mode_bad_input_prints_nothing(self):
+        r = self.run_script(["--party"], stdin="garbage")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_refresh_auth_writes_cache(self):
+        r = self.run_script(["--refresh-auth", "k1", "600"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "cli_state.json")) as f:
+            self.assertEqual(json.load(f)["auth_cache"]["k1"]["status"]["subscriptionType"], "pro")
+
+    def test_preview(self):
+        r = self.run_script(["--preview", "--width", "100"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = strip(r.stdout)
+        for header in ("classic", "minimal", "full_rpg", "party panel"):
+            self.assertIn(f"═══ {header}", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "cli_state.json")))
 
 
 if __name__ == "__main__":

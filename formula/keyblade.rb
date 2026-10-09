@@ -14,6 +14,7 @@ class Keyblade < Formula
     libexec.install "install.sh"
     libexec.install "uninstall.sh"
     (libexec/"skills/kh-menu").install "skills/kh-menu/SKILL.md"
+    (libexec/"skills/keyblade-statusbar-config").install "skills/keyblade-statusbar-config/SKILL.md"
 
     (bin/"keyblade-setup").write <<~BASH
       #!/bin/bash
@@ -79,49 +80,16 @@ class Keyblade < Formula
         echo "  Config preserved: $INSTALL_DIR/config.json"
       fi
 
-      # Install /kh-menu skill
-      SKILL_DIR="$BASE_DIR/skills/kh-menu"
-      mkdir -p "$SKILL_DIR"
-      ln -sf "$LIBEXEC/skills/kh-menu/SKILL.md" "$SKILL_DIR/SKILL.md"
-      echo "  Installed /kh-menu skill"
+      # Install /kh-menu and /keyblade-statusbar-config skills
+      for skill in kh-menu keyblade-statusbar-config; do
+        mkdir -p "$BASE_DIR/skills/$skill"
+        ln -sf "$LIBEXEC/skills/$skill/SKILL.md" "$BASE_DIR/skills/$skill/SKILL.md"
+      done
+      echo "  Installed /kh-menu and /keyblade-statusbar-config skills"
 
-      # Register statusLine in settings.json
+      # Register statusLine + subagentStatusLine in settings.json (backs up others)
       echo "  Configuring statusline..."
-      python3 -c "
-      import json, os
-
-      settings_path = '$SETTINGS'
-      install_dir = '$INSTALL_DIR'
-
-      if os.path.exists(settings_path):
-          with open(settings_path) as f:
-              settings = json.load(f)
-      else:
-          settings = {}
-
-      existing = settings.get('statusLine')
-      if existing:
-          cmd = ''
-          if isinstance(existing, dict):
-              cmd = existing.get('command', '')
-          elif isinstance(existing, str):
-              cmd = existing
-          if cmd and 'keyblade' not in cmd:
-              settings['_statusLine_backup'] = existing
-              print(f'  Backed up existing statusLine: {cmd}')
-
-      settings['statusLine'] = {
-          'type': 'command',
-          'command': f'python3 {install_dir}/keyblade.py',
-          'padding': 0
-      }
-
-      with open(settings_path, 'w') as f:
-          json.dump(settings, f, indent=2)
-          f.write('\\n')
-
-      print('  StatusLine registered.')
-      "
+      python3 "$LIBEXEC/keyblade.py" --register-settings "$SETTINGS" "$INSTALL_DIR/keyblade.py"
 
       # Apply theme if specified
       if [ -n "$THEME" ]; then
@@ -150,7 +118,11 @@ class Keyblade < Formula
       echo "  Themes: classic (default), minimal, full_rpg"
       echo ""
       echo "  Commands:"
-      echo "    /kh-menu  — Open the Kingdom Hearts command menu"
+      echo "    /kh-menu                   — Kingdom Hearts command menu"
+      echo "    /keyblade-statusbar-config — Change settings"
+      echo ""
+      echo "  Preview every theme in this terminal:"
+      echo "    python3 $INSTALL_DIR/keyblade.py --preview"
       echo ""
       echo "  The Keyblade has chosen you."
       echo ""

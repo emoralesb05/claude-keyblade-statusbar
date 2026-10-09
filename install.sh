@@ -99,46 +99,9 @@ chmod +x "$INSTALL_DIR/keyblade.py" "$INSTALL_DIR/uninstall.sh"
 
 echo "  Installed /kh-menu and /keyblade-statusbar-config skills"
 
-# Register statusLine in settings.json
+# Register statusLine + subagentStatusLine in settings.json (backs up others)
 echo "  Configuring statusline..."
-python3 -c "
-import json, os
-
-settings_path = '$SETTINGS'
-install_dir = '$INSTALL_DIR'
-
-if os.path.exists(settings_path):
-    with open(settings_path) as f:
-        settings = json.load(f)
-else:
-    settings = {}
-
-# Check for existing statusLine and back it up
-existing = settings.get('statusLine')
-if existing:
-    cmd = ''
-    if isinstance(existing, dict):
-        cmd = existing.get('command', '')
-    elif isinstance(existing, str):
-        cmd = existing
-
-    if cmd and 'keyblade' not in cmd:
-        settings['_statusLine_backup'] = existing
-        print(f'  Backed up existing statusLine: {cmd}')
-
-# Set keyblade statusline
-settings['statusLine'] = {
-    'type': 'command',
-    'command': f'python3 {install_dir}/keyblade.py',
-    'padding': 0
-}
-
-with open(settings_path, 'w') as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-
-print('  StatusLine registered.')
-"
+python3 "$INSTALL_DIR/keyblade.py" --register-settings "$SETTINGS"
 
 # Apply theme if specified
 THEME="${1:-}"
@@ -170,6 +133,9 @@ echo ""
 echo "  Commands:"
 echo "    /kh-menu                   — Kingdom Hearts command menu"
 echo "    /keyblade-statusbar-config — Change settings"
+echo ""
+echo "  Preview every theme in this terminal:"
+echo "    python3 $INSTALL_DIR/keyblade.py --preview"
 echo ""
 echo "  The Keyblade has chosen you."
 echo ""

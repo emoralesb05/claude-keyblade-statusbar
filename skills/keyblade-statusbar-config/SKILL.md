@@ -27,13 +27,15 @@ Use AskUserQuestion with:
 - question: "KEYBLADE CONFIG — What do you want to change?"
 - options: One per category, with current values previewed in the description
   - label: "Theme" / description: "Currently: full_rpg (classic, minimal, full_rpg)"
-  - label: "HP" / description: "Currently: 5_hour, budget $5.00, cache 60s"
-  - label: "Keyblade Names" / description: "Opus → Ultima Weapon, Sonnet → Oathkeeper, Haiku → Kingdom Key"
+  - label: "HP" / description: "Currently: auto, budget $5.00, cure timer on"
+  - label: "Keyblade Names" / description: "Opus → Ultima Weapon, Sonnet → Oathkeeper, Haiku → Kingdom Key, Fable → Sweet Memories"
   - label: "Level & EXP" / description: "per: 100, curve: linear, max: 99, source: lines"
 
 Use UP TO 4 options per question. If there are more than 4 categories, use two questions. Good groupings:
-- Question 1: Theme, HP, Level & EXP, Drive
-- Question 2: World, Keyblade Names, Colors, Display (munny/timer)
+- Question 1: Theme, HP & Auth, Level & EXP, Drive
+- Question 2: World & PR, Keyblade Names, Colors, Display (munny/timer/focus/session/party panel)
+
+After changing a setting, suggest `python3 ~/.claude/hooks/keyblade/keyblade.py --preview` to see every theme in the terminal.
 
 ### Step 2: Setting Selection
 
@@ -64,27 +66,38 @@ After selection, apply the change and confirm with KH flavor.
 
 ### theme
 Which statusline layout to use.
-- `classic` — 2 lines: HP/MP bars + keyblade name, world, munny
-- `minimal` — 1 line: keyblade name, world, HP%, munny
-- `full_rpg` — 3 lines: HP/MP bars, keyblade, level, world, drive gauge, EXP, munny, timer, party member
+- `classic` — 2 lines: HP/MP bars + keyblade name, auth badge, world, PR, munny
+- `minimal` — 1 line: keyblade name, auth badge, world, HP%, MP%, munny
+- `full_rpg` — 3 lines: HP/MP bars, keyblade, auth, level, world, PR, drive gauge, EXP, munny, focus, timer, party member, session name
 
 ### hp_source
 What the HP bar tracks. Goes down as usage increases.
-- `5_hour` — 5-hour plan usage window (Max/Pro users). Pulls from Anthropic usage API.
-- `7_day` — 7-day plan usage window (Max/Pro users). Pulls from Anthropic usage API.
-- `cost_budget` — session cost vs hp_budget_usd (API key users without Max/Pro)
+- `auto` (default) — picks by how the session authenticates: claude.ai subscribers get whichever plan window (5-hour or 7-day) is closer to its cap; Claude apps gateway users get their spend limit; API key / Bedrock / Vertex / Foundry sessions get cost_budget.
+- `5_hour` — 5-hour plan usage window (Pro/Max). From the `rate_limits` field Claude Code sends.
+- `7_day` — 7-day plan usage window (Pro/Max).
+- `spend_limit` — Claude apps gateway spend limit (shows `$used/$limit`).
+- `cost_budget` — session cost vs hp_budget_usd (API key users).
 
 ### hp_budget_usd
-The dollar budget for HP when using cost_budget source. Default: 5.00. When you spend this much, HP hits 0.
+The dollar budget for HP when using cost_budget (or auto on an API key). Default: 5.00. When you spend this much, HP hits 0.
 
-### hp_usage_cache_ttl
-How often (in seconds) to re-fetch plan usage from the API. Default: 60. Lower = more up-to-date but more API calls.
+### show_hp_reset
+Show the ✚ Cure countdown until the plan window resets. true/false. Default: true.
+
+### show_auth
+Show the ◈ auth badge: Max / Pro / Team / Enterprise (claude.ai plan), API (API key), OAuth, Bedrock / Vertex / Foundry / Gateway. true/false. Default: true.
+
+### auth_cache_ttl
+Seconds before re-checking `claude auth status` (runs in the background). Default: 600.
 
 ### keyblade_names
 Map each Claude model to a keyblade name. The user can set any string they want.
 - `opus` — default: "Ultima Weapon"
 - `sonnet` — default: "Oathkeeper"
 - `haiku` — default: "Kingdom Key"
+- `fable` — default: "Sweet Memories"
+
+Any key that appears in the model ID works, so the user can add new model families (e.g. `"mythos": "Kingdom Key D"`).
 
 Some fun alternatives to suggest if asked:
 - Opus: Oblivion, Fenrir, Decisive Pumpkin, Two Become One
@@ -106,8 +119,8 @@ Maximum level cap. Default: 99 (like Kingdom Hearts).
 What counts toward leveling and EXP (EXP is tied to the same source).
 - `lines` — total lines modified (added + removed)
 - `added_only` — only lines added
-- `commits` — number of commits
-- `files` — number of files changed
+- `commits` — commits made since the session started
+- `files` — files touched since the session started (committed, modified, or new)
 
 ### show_drive
 Show the drive gauge bar. true/false. Default: true. Only visible in full_rpg theme.
@@ -119,7 +132,7 @@ What fills the drive bar.
 - `both` — files + lines combined
 
 ### drive_max_lines
-Scale for 100% on the drive bar. Default: 500. When uncommitted changes reach this number, the bar is full.
+Scale for 100% on the drive bar. Default: 1000. When uncommitted changes reach this number, the bar is full.
 
 ### drive_bar_width
 Character width of the drive bar. Default: 10.
@@ -127,11 +140,23 @@ Character width of the drive bar. Default: 10.
 ### drive_include_untracked
 Whether to count untracked (new, not yet git-added) files in the drive total. Default: true.
 
+### git_cache_ttl
+Seconds to reuse git status between renders. Default: 5. Use 0 for always-fresh (slower in big repos).
+
+### show_drive_form / drive_form_names / drive_form_colors
+Drive Form shown for the reasoning effort level (`low`, `medium`, `high`, `xhigh`, `max`). Defaults: Valor (red), Wisdom (blue), Limit (bright_cyan), Master (bright_yellow), Final (bright_white). Hidden automatically when the model has no effort setting.
+
 ### show_world
-Show the world (directory) name. true/false.
+Show the world (directory) name. Clicking it opens the repo in terminals that support links. true/false.
 
 ### show_branch
-Show the git branch name after the directory (e.g. `myapp:main`). true/false. Default: true.
+Show the git branch name after the directory (e.g. `myapp ∙ main ↑2`), with commits ahead/behind upstream. true/false. Default: true.
+
+### show_pr
+Show the open PR / MR badge (`#12 ✓`). ✓ approved, ✗ changes requested, ○ pending, ◌ draft. true/false. Default: true.
+
+### show_worktree
+Show `⎇ name` when the session is in a git worktree. true/false. Default: true.
 
 ### world_fallback
 The world name shown when no directory is detected. Default: "Traverse Town".
@@ -155,17 +180,40 @@ Show the munny (cost) counter. true/false.
 ### show_timer
 Show the journey timer (full_rpg theme only). true/false.
 
+### show_focus
+Show the ◎ Focus gauge — prompt cache hit ratio and time until a warm cache goes cold (full_rpg only). true/false. Default: true.
+
+### show_session_name
+Show the ✎ session name (from /rename or the AI-generated title). true/false. Default: true.
+
+### show_fast_mode
+Show ⚡ next to the keyblade when fast mode is on. true/false. Default: true.
+
+### show_party
+Show the `--agent` name as a party member. true/false. Default: true.
+
+### show_vim_mode
+Show `-- NORMAL --` etc. in the statusline. Default: false. If enabled, also suggest setting `"hideVimModeIndicator": true` in the `statusLine` block of `~/.claude/settings.json` so the mode isn't shown twice.
+
+### party_panel
+Render subagents as party members in Claude Code's agent panel (`subagentStatusLine`). true/false. Default: true.
+
+### responsive / hyperlinks / color_mode
+- `responsive` — fit lines to the terminal width, dropping the least important segments first. Default: true.
+- `hyperlinks` — clickable world/PR links (OSC 8). Default: true. Turn off if the terminal shows garbage.
+- `color_mode` — `auto`, `truecolor`, `basic`, or `none`. Default: auto.
+
 ### colors
 ANSI color names for each element. Available colors:
 - `green`, `blue`, `cyan`, `yellow`, `red`, `magenta`, `white`
-- Bright variants: `bright_green`, `bright_blue`, `bright_cyan`, `bright_yellow`, `bright_white`
+- Bright variants: `bright_green`, `bright_blue`, `bright_cyan`, `bright_yellow`, `bright_white`, `bright_orange`
 
 Color assignments:
-- `hp` — HP bar color (default: green). Note: HP bar auto-shifts to yellow/red at low percentages.
+- `hp` — HP bar color when healthy (default: green). Auto-shifts to amber/red at low percentages.
 - `mp` — MP bar color (default: blue)
 - `munny` — Munny counter color (default: yellow)
 - `keyblade` — Keyblade name color (default: cyan)
-- `drive` — Drive gauge color (default: magenta)
+- `drive` — Drive gauge color when no Drive Form is shown (default: magenta)
 
 ## Rules
 

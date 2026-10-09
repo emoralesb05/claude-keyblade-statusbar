@@ -2218,6 +2218,15 @@ class TestCommandLine(KeybladeTestCase):
         for header in ("classic", "minimal", "full_rpg", "party panel"):
             self.assertIn(f"═══ {header}", out)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "cli_state.json")))
+        # The scratch state directory is removed afterwards
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith("keyblade_preview_")], [])
+
+    def test_preview_restores_live_state_file(self):
+        live = keyblade.STATE_FILE
+        with contextlib.redirect_stdout(io.StringIO()):
+            keyblade.preview(["minimal"])
+        self.assertEqual(keyblade.STATE_FILE, live)
+        self.assertFalse(os.path.exists(live))  # preview never touched it
 
 
 if __name__ == "__main__":

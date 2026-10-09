@@ -2148,8 +2148,9 @@ def preview(args):
     """Render sample scenarios for each theme in this terminal.
 
     Usage: keyblade.py --preview [classic|minimal|full_rpg ...] [--width N]
-    Uses your config and the current directory's git state; level-up and save
-    point state go to a throwaway file, not the live one.
+    Uses your config and the current directory's git state; level-up, save
+    point and party state go to a scratch directory that's removed afterwards,
+    not the live state file.
     """
     global STATE_FILE
     if "--width" in args:
@@ -2158,7 +2159,16 @@ def preview(args):
             os.environ["COLUMNS"] = args[idx + 1]
     themes = [a for a in args if a in RENDERERS] or list(RENDERERS)
     config = load_config()
-    STATE_FILE = os.path.join(tempfile.mkdtemp(prefix="keyblade_preview_"), "state.json")
+    live_state = STATE_FILE
+    with tempfile.TemporaryDirectory(prefix="keyblade_preview_") as scratch:
+        STATE_FILE = os.path.join(scratch, "state.json")
+        try:
+            _render_previews(themes, config)
+        finally:
+            STATE_FILE = live_state
+
+
+def _render_previews(themes, config):
     now = int(time.time())
     bld, dim, rst = ANSI["bold"], ANSI["dim"], ANSI["reset"]
     for theme in themes:

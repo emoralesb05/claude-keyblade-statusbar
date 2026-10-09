@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1
+
+Fixed
+- `keyblade.py --preview` left a `keyblade_preview_*` directory in `$TMPDIR` on every run; its scratch state is now removed when the preview finishes.
+
 ## 1.2.0
 
 Changed

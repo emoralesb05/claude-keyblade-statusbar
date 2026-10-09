@@ -1,8 +1,8 @@
 class Keyblade < Formula
   desc "Kingdom Hearts themed statusline and command menu for Claude Code"
   homepage "https://github.com/emoralesb05/claude-keyblade-statusbar"
-  url "https://github.com/emoralesb05/claude-keyblade-statusbar/archive/refs/tags/v1.1.1.tar.gz"
-  sha256 "215023f1dfb78ab83d1cca38d5560faaaec417b956f6330119a5a62bdb193a9e"
+  url "https://github.com/emoralesb05/claude-keyblade-statusbar/archive/refs/tags/v1.2.0.tar.gz"
+  sha256 "074e65fa76c583819b1fb0f0f6d744ed4c10cc1d26eeb841e1770a977537fd7a"
   license "MIT"
 
   depends_on "python@3"

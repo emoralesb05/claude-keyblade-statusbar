@@ -64,6 +64,7 @@ DEFAULT_CONFIG = {
     "show_party": True,
     "show_vim_mode": False,
     "party_panel": True,
+    "party_members": {},
     "show_drive_form": True,
     "drive_form_names": {
         "low": "Valor Form",
@@ -1838,65 +1839,163 @@ def render_full_rpg(data, config, auth=None):
 
 # ─── Party Panel (subagentStatusLine) ────────────────────────────
 
-TASK_STATES = {
-    "running": ("▸", "bright_cyan"),   # ▸
-    "completed": ("✓", "green"),       # ✓
-    "failed": ("✗", "red"),            # ✗
-    "killed": ("✗", "dim"),            # ✗
+# Subagents join the party as real KH party members, picked by role. Role
+# words match the subagent's type/name as words ("code-reviewer" → review);
+# keys under 4 letters must match a whole word ("pr", not "prompt").
+PARTY_ROLES = (
+    ("security", "Donald"), ("audit", "Donald"),        # defensive magic
+    ("test", "Goofy"), ("qa", "Goofy"),                 # the shield: reliable support
+    ("review", "Riku"),                                 # the rival's sharp eye
+    ("explore", "Aladdin"), ("search", "Aladdin"),      # knows every corner of Agrabah
+    ("plan", "Mulan"), ("architect", "Mulan"),          # the strategist
+    ("debug", "Tron"), ("investigat", "Tron"),          # fights the bugs in the system
+    ("docs", "Beast"), ("documentation", "Beast"),      # keeper of the library
+    ("writer", "Beast"),
+    ("pr", "Jack Sparrow"), ("release", "Jack Sparrow"),  # ships it
+    ("deploy", "Jack Sparrow"),
+)
+# World guests for everything else (and for a second explorer, reviewer, ...)
+PARTY_GUESTS = ("Simba", "Auron", "Ariel", "Tarzan", "Hercules", "Rapunzel",
+                "Baymax", "Sulley", "Peter Pan", "Woody")
+PARTY_COLORS = {
+    "Donald": "bright_blue", "Goofy": "bright_green", "Riku": "bright_white",
+    "Aladdin": "bright_orange", "Mulan": "red", "Tron": "bright_cyan",
+    "Beast": "magenta", "Jack Sparrow": "yellow", "Simba": "bright_yellow",
+    "Auron": "red", "Ariel": "cyan", "Tarzan": "green", "Hercules": "bright_yellow",
+    "Rapunzel": "magenta", "Baymax": "white", "Sulley": "blue",
+    "Peter Pan": "bright_green", "Woody": "yellow",
 }
+PARTY_TWINKLE = ("✦", "✧")   # ✦ ✧ alternate each tick while working
+PARTY_HP_WARN = 25                     # show ♥ only when context left drops below this %
 
 
-def render_party_row(task, config, width=None):
-    """One subagent as a party member: status, name, keyblade, form, MP, label."""
+def _role_words(*names):
+    """Lowercase words of agent type/name strings, splitting camelCase."""
+    words = []
+    for name in names:
+        spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name or ""))
+        words += re.findall(r"[a-z0-9]+", spaced.lower())
+    return words
+
+
+def _role_matches(key, words):
+    key = key.lower()
+    return any(w == key or (len(key) >= 4 and w.startswith(key)) for w in words)
+
+
+def party_role_member(task, config):
+    """Party member for a subagent's role (config party_members first), or None."""
+    agent_type, name = task.get("agentType") or "", task.get("name") or ""
+    words = _role_words(agent_type, name)
+    for key, member in (config.get("party_members") or {}).items():
+        if key.lower() in (agent_type.lower(), name.lower()) or _role_matches(key, words):
+            return clean_text(member)
+    for key, member in PARTY_ROLES:
+        if _role_matches(key, words):
+            return member
+    return None
+
+
+def assign_party(tasks, config, now):
+    """Give each visible subagent a party member, stable for its lifetime.
+
+    Assignments live in the state file so a member doesn't change when an
+    earlier subagent leaves the panel; two visible subagents never share one.
+    Also records when each subagent first shows up finished, for its time.
+    """
+    state = _read_state()
+    party = state.get("party") or {}
+    party = {k: v for k, v in party.items() if isinstance(v, dict)}
+    taken = {party[t["id"]].get("member") for t in tasks if t["id"] in party}
+    changed = False
+    for task in tasks:
+        if task["id"] in party:
+            continue
+        member = party_role_member(task, config)
+        if not member or member in taken:
+            free = [g for g in PARTY_GUESTS if g not in taken]
+            member = free[0] if free else (member or PARTY_GUESTS[0])
+        party[task["id"]] = {"member": member, "ts": now}
+        taken.add(member)
+        changed = True
+    for task in tasks:
+        entry = party[task["id"]]
+        if task.get("status") != "running" and "done_at" not in entry:
+            entry["done_at"] = now
+            changed = True
+    if changed:
+        state["party"] = _prune(party, keep=100)
+        _write_state(state)
+    return {t["id"]: party[t["id"]] for t in tasks}
+
+
+def render_party_row(task, entry, config, width=None, name_width=0, now=None):
+    """One subagent as party chatter: who, what they're saying, HP if low, time."""
+    now = time.time() if now is None else now
     rst, bld, dim = ANSI["reset"], ANSI["bold"], ANSI["dim"]
-    glyph, gcolor = TASK_STATES.get(task.get("status"), ("∙", "dim"))
-    name = clean_text(task.get("name") or task.get("agentType") or "Party")
-    if width is not None:
-        name = truncate(name, max(8, width // 3))
-    segs = [(0, f"{ANSI.get(gcolor, '')}{glyph}{rst} {bld}{PARTY_ICON} {name}{rst}")]
+    member = entry.get("member") or "Party"
+    color = ANSI.get(PARTY_COLORS.get(member, "white"), "")
+    status = task.get("status")
+    running = status == "running"
+    knocked_out = status in ("failed", "killed")
 
-    model = task.get("model")
-    if model:
-        kc = ANSI.get(config.get("colors", {}).get("keyblade", "cyan"), ANSI["cyan"])
-        segs.append((3, f"{kc}{KEYBLADE_ICON}  {resolve_keyblade(model, '', config)}{rst}"))
+    if running:
+        glyph = f"{color}{PARTY_TWINKLE[int(now) % 2]}{rst}"
+    elif status == "completed":
+        glyph = f"{ANSI['green']}✓{rst}"
+    elif knocked_out:
+        glyph = f"{ANSI['red'] if status == 'failed' else dim}✗{rst}"
+    else:
+        glyph = f"{dim}∙{rst}"
+    head = f"{glyph} {color}{bld}{member.ljust(name_width)}{rst}  "
 
-    effort = task.get("effort")
-    if isinstance(effort, str) and config.get("show_drive_form", True):
-        form = config.get("drive_form_names", {}).get(effort.lower())
-        color = config.get("drive_form_colors", {}).get(effort.lower(), "yellow")
-        if form:
-            segs.append((4, f"{ANSI.get(color, '')}{FORM_ICON} {form.replace(' Form', '')}{rst}"))
-
+    tail = []
     tokens, size = task.get("tokenCount"), task.get("contextWindowSize")
-    if isinstance(tokens, (int, float)) and isinstance(size, (int, float)) and size > 0:
-        mp = max(0.0, 100.0 - tokens / size * 100.0)
-        _, clr = mp_label_and_color(mp, config.get("colors", {}))
-        segs.append((1, render_bar(mp, 6, clr, icon=MP_ICON, icon_color="icon_mp")))
-
+    if running and isinstance(tokens, (int, float)) and isinstance(size, (int, float)) and size > 0:
+        hp = max(0.0, 100.0 - tokens / size * 100.0)
+        if hp < PARTY_HP_WARN:
+            tail.append(f"{ANSI['red']}{HEART_ICON} {hp:.0f}% low{rst}")
     start = task.get("startTime")
-    if task.get("status") == "running" and isinstance(start, (int, float)):
-        segs.append((5, f"{dim}{TIMER_ICON} {format_duration(max(0, time.time() * 1000 - start))}{rst}"))
+    end = now if running else entry.get("done_at")
+    if isinstance(start, (int, float)) and isinstance(end, (int, float)) and not knocked_out:
+        tail.append(f"{dim}{format_duration(max(0, end * 1000 - start))}{rst}")
+    tail = "  ".join(tail)
 
-    line = fit_segments(segs, width, prefix="")
-    label = clean_text(task.get("label") or task.get("description") or "")
-    if label:
-        room = None if width is None else width - visible_width(line) - 2
-        if room is None or room >= 8:
-            line += f"  {dim}{label if room is None else truncate(label, room)}{rst}"
-    return line
+    said = clean_text(task.get("label") or task.get("description") or "")
+    if running and said and not said.endswith((".", "!", "?", "…")):
+        said += "…"
+    ko = f"{ANSI['red']}KO{rst}" + (" — " if said else "") if knocked_out else ""
+    room = None
+    if width is not None:
+        room = width - 1 - visible_width(head + ko) - (visible_width(tail) + 2 if tail else 0) - 2
+    if said:
+        if room is not None:
+            said = truncate(said, max(0, room)) if room >= 6 else ""
+        quote_color = dim if status == "completed" else ""
+        said = f'{quote_color}"{said}"{rst}' if said else ""
+    body = head + ko + said
+    if tail:
+        gap = 2 if width is None else max(2, width - 1 - visible_width(body) - visible_width(tail))
+        body += " " * gap + tail
+    return body
 
 
-def render_party(payload, config):
+def render_party(payload, config, now=None):
     """subagentStatusLine output: one {"id", "content"} JSON line per subagent."""
     if not config.get("party_panel", True):
         return []
+    now = time.time() if now is None else now
     width = payload.get("columns")
     width = width if isinstance(width, int) and width > 0 else None
-    rows = []
-    for task in payload.get("tasks") or []:
-        if isinstance(task, dict) and task.get("id"):
-            rows.append(json.dumps({"id": task["id"], "content": render_party_row(task, config, width)}))
-    return rows
+    tasks = [t for t in payload.get("tasks") or [] if isinstance(t, dict) and t.get("id")]
+    if not tasks:
+        return []
+    party = assign_party(tasks, config, now)
+    name_width = min(12, max(len(e.get("member", "")) for e in party.values()))
+    return [
+        json.dumps({"id": t["id"], "content": render_party_row(t, party[t["id"]], config, width, name_width, now)})
+        for t in tasks
+    ]
 
 
 # ─── Settings Registration ───────────────────────────────────────
@@ -2068,14 +2167,18 @@ def preview(args):
             print(f"{dim}── {title}{rst}")
             print(RENDERERS[theme](data, config, auth=auth))
     party = {"columns": int(os.environ.get("COLUMNS") or 0) or 100, "tasks": [
-        {"id": "a1", "name": "Explore", "status": "running", "model": "claude-haiku-5-5",
-         "effort": "low", "tokenCount": 38_000, "contextWindowSize": 200_000,
-         "startTime": now * 1000 - 95_000, "label": "Searching for statusline payload handling"},
-        {"id": "a2", "name": "code-reviewer", "status": "completed", "model": "claude-opus-5-5",
-         "effort": "xhigh", "tokenCount": 640_000, "contextWindowSize": 1_000_000,
+        {"id": "a1", "agentType": "Explore", "status": "running", "model": "claude-haiku-5-5",
+         "tokenCount": 38_000, "contextWindowSize": 200_000, "startTime": now * 1000 - 95_000,
+         "label": "Searching for statusline payload handling"},
+        {"id": "a2", "name": "security-reviewer", "agentType": "general-purpose", "status": "running",
+         "tokenCount": 176_000, "contextWindowSize": 200_000, "startTime": now * 1000 - 190_000,
+         "label": "Auditing the auth flow"},
+        {"id": "a3", "agentType": "code-reviewer", "status": "completed", "model": "claude-opus-5-5",
+         "tokenCount": 640_000, "contextWindowSize": 1_000_000, "startTime": now * 1000 - 242_000,
          "label": "Reviewed keyblade.py: 2 findings"},
-        {"id": "a3", "agentType": "general-purpose", "status": "failed", "model": "claude-sonnet-5-5",
-         "tokenCount": 190_000, "contextWindowSize": 200_000, "label": "Ran out of context"},
+        {"id": "a4", "agentType": "general-purpose", "status": "failed",
+         "tokenCount": 199_000, "contextWindowSize": 200_000, "startTime": now * 1000 - 300_000,
+         "label": "Ran out of context"},
     ]}
     print(f"\n{bld}═══ party panel (subagentStatusLine) ═══{rst}")
     for row in render_party(party, config):

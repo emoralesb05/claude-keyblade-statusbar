@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0
+
+Changed
+- **Party panel redesign** — subagents now join as real KH party members picked by role (security→Donald, tests→Goofy, review→Riku, explore→Aladdin, plan→Mulan, debug→Tron, docs→Beast, PR/release→Jack Sparrow; world guests like Simba and Auron for the rest) and "chatter" what they're doing: `✦ Aladdin  "Searching…"  1m35s`. ✦ twinkles while working, ✓ done with the total time, ✗ KO on failure. The per-row keyblade, Drive Form and MP bar are gone; ♥ shows only when a member's context runs low. Each subagent keeps its member for its whole run, and visible members never repeat.
+- New `party_members` config to choose members by agent type or name.
+
 ## 1.1.1
 
 Fixed

@@ -36,6 +36,7 @@
   "show_party": true,
   "show_vim_mode": false,
   "party_panel": true,
+  "party_members": {},
   "show_drive_form": true,
   "drive_form_names": {
     "low": "Valor Form",

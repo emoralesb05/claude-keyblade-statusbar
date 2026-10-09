@@ -1649,52 +1649,134 @@ class TestSegments(KeybladeTestCase):
 # ─── Party panel ─────────────────────────────────────────────────
 
 class TestPartyPanel(KeybladeTestCase):
-    def task(self, **overrides):
-        task = {"id": "t1", "name": "Explore", "type": "local_agent", "status": "running",
+    NOW = 1_800_000_000.0
+
+    def task(self, tid="t1", **overrides):
+        task = {"id": tid, "type": "local_agent", "agentType": "Explore", "status": "running",
                 "description": "Find the bug", "label": "Searching keyblade.py for payload handling",
-                "startTime": time.time() * 1000 - 65_000, "model": "claude-haiku-5-5", "effort": "low",
+                "startTime": self.NOW * 1000 - 65_000, "model": "claude-haiku-5-5", "effort": "low",
                 "contextWindowSize": 200_000, "tokenCount": 50_000, "tokenSamples": [1, 2], "cwd": "/x"}
         task.update(overrides)
         return task
 
-    def rows(self, tasks, columns=120, **cfg):
-        return [json.loads(r) for r in keyblade.render_party({"columns": columns, "tasks": tasks}, self.config(**cfg))]
+    def rows(self, tasks, columns=100, now=None, **cfg):
+        payload = {"columns": columns, "tasks": tasks}
+        out = keyblade.render_party(payload, self.config(**cfg), now=self.NOW if now is None else now)
+        return [json.loads(r) for r in out]
 
-    def test_row_contents(self):
-        (row,) = self.rows([self.task()])
-        self.assertEqual(row["id"], "t1")
-        content = strip(row["content"])
-        for piece in ("▸", "Explore", "Kingdom Key", "Valor", "75%", "1m05s", "Searching"):
-            self.assertIn(piece, content)
+    def content(self, tasks, **kw):
+        return [strip(r["content"]) for r in self.rows(tasks, **kw)]
 
-    def test_status_glyphs(self):
-        for status, glyph in (("completed", "✓"), ("failed", "✗"), ("killed", "✗")):
-            (row,) = self.rows([self.task(status=status)])
-            self.assertTrue(strip(row["content"]).startswith(glyph), status)
+    def test_running_row_is_party_chatter(self):
+        (row,) = self.content([self.task()])
+        self.assertTrue(row.startswith(("✦ Aladdin", "✧ Aladdin")), row)
+        self.assertIn('"Searching keyblade.py for payload handling…"', row)
+        self.assertTrue(row.rstrip().endswith("1m05s"), row)
 
-    def test_fits_columns_and_truncates_label(self):
-        for columns in (100, 60, 40):
-            (row,) = self.rows([self.task(label="L" * 200)], columns=columns)
-            self.assertLessEqual(keyblade.visible_width(row["content"]), columns)
-        (row,) = self.rows([self.task(label="L" * 200)], columns=100)
-        self.assertIn("…", row["content"])
+    def test_no_keyblades_forms_or_bars(self):
+        (row,) = self.content([self.task()])
+        for piece in (keyblade.KEYBLADE_ICON, keyblade.FORM_ICON, keyblade.MP_ICON, keyblade.BAR_FULL, "Valor"):
+            self.assertNotIn(piece, row)
+
+    def test_roles_map_to_party_members(self):
+        cases = {
+            "code-reviewer": "Riku", "security-reviewer": "Donald", "test-writer": "Goofy",
+            "Explore": "Aladdin", "Plan": "Mulan", "debugger": "Tron", "docs-writer": "Beast",
+            "pr-creator": "Jack Sparrow", "releaseManager": "Jack Sparrow",
+        }
+        for agent_type, member in cases.items():
+            got = keyblade.party_role_member({"agentType": agent_type}, self.config())
+            self.assertEqual(got, member, agent_type)
+
+    def test_short_keys_need_whole_words(self):
+        for agent_type in ("prompt-engineer", "docker-expert", "general-purpose", "qualifier"):
+            self.assertIsNone(keyblade.party_role_member({"agentType": agent_type}, self.config()), agent_type)
+
+    def test_name_counts_as_role(self):
+        task = {"agentType": "general-purpose", "name": "security-reviewer"}
+        self.assertEqual(keyblade.party_role_member(task, self.config()), "Donald")
+
+    def test_only_real_party_members(self):
+        cast = {m for _, m in keyblade.PARTY_ROLES} | set(keyblade.PARTY_GUESTS)
+        self.assertEqual(cast, set(keyblade.PARTY_COLORS))
+        for not_a_fighter in ("Jiminy", "Naminé", "Chip", "Dale", "Yen Sid", "Moogle"):
+            self.assertNotIn(not_a_fighter, cast)
+
+    def test_unknown_roles_get_world_guests(self):
+        tasks = [self.task(f"g{i}", agentType="general-purpose") for i in range(3)]
+        members = [r.split()[1] for r in self.content(tasks)]
+        self.assertEqual(members, ["Simba", "Auron", "Ariel"])
+
+    def test_no_two_visible_members_alike(self):
+        tasks = [self.task("e1"), self.task("e2"), self.task("e3", agentType="general-purpose")]
+        members = [r.split()[1] for r in self.content(tasks)]
+        self.assertEqual(members[0], "Aladdin")
+        self.assertEqual(len(set(members)), 3)
+
+    def test_member_is_stable_for_a_subagent(self):
+        first = self.content([self.task("e1"), self.task("e2")])
+        second = self.content([self.task("e2")])  # e1 left the panel
+        self.assertEqual(first[1].split()[1], second[0].split()[1])
+
+    def test_config_override(self):
+        cfg = {"party_members": {"Explore": "Tarzan", "my-agent": "Ariel"}}
+        self.assertTrue(self.content([self.task()], **cfg)[0][2:].startswith("Tarzan"))
+        self.assertIn("Ariel", self.content([self.task("t2", agentType="my-agent")], **cfg)[0])
+
+    def test_twinkles_while_running(self):
+        a = self.content([self.task()], now=self.NOW)[0][0]
+        b = self.content([self.task()], now=self.NOW + 1)[0][0]
+        self.assertEqual({a, b}, {"✦", "✧"})
+
+    def test_completed_shows_check_and_total_time(self):
+        self.rows([self.task()], now=self.NOW)                          # seen running
+        (row,) = self.content([self.task(status="completed", label="Found it")], now=self.NOW + 30)
+        self.assertTrue(row.startswith("✓ Aladdin"), row)
+        self.assertIn('"Found it"', row)
+        self.assertTrue(row.rstrip().endswith("1m35s"), row)            # 65s + 30s, then frozen
+        (later,) = self.content([self.task(status="completed", label="Found it")], now=self.NOW + 999)
+        self.assertTrue(later.rstrip().endswith("1m35s"), later)
+
+    def test_knocked_out(self):
+        for status, color in (("failed", "red"), ("killed", "dim")):
+            (raw,) = self.rows([self.task(f"k-{status}", status=status, label="Ran out of context")])
+            row = strip(raw["content"])
+            self.assertTrue(row.startswith("✗"), row)
+            self.assertIn('KO — "Ran out of context"', row)
+            self.assertTrue(raw["content"].startswith(keyblade.ANSI[color]), status)
+
+    def test_hp_only_when_low(self):
+        (healthy,) = self.content([self.task(tokenCount=100_000)])
+        self.assertNotIn(keyblade.HEART_ICON, healthy)
+        (low,) = self.content([self.task(tokenCount=176_000)])
+        self.assertIn(f"{keyblade.HEART_ICON} 12% low", low)
+
+    def test_fits_columns_and_right_aligns_time(self):
+        for columns in (100, 60, 40, 24):
+            (row,) = self.content([self.task(label="L" * 200)], columns=columns)
+            self.assertLessEqual(keyblade.visible_width(row), columns, columns)
+        (row,) = self.content([self.task(label="short")], columns=80)
+        self.assertEqual(keyblade.visible_width(row), 79)
+        self.assertTrue(row.endswith("1m05s"))
+
+    def test_names_padded_to_align_quotes(self):
+        rows = self.content([self.task("a"), self.task("b", agentType="pr-creator")])
+        self.assertEqual(rows[0].index('"'), rows[1].index('"'))
 
     def test_tasks_without_id_skipped(self):
         self.assertEqual(len(self.rows([self.task(), {"name": "no id"}, "junk"])), 1)
 
-    def test_numeric_effort_and_missing_model(self):
-        (row,) = self.rows([self.task(effort=4096, model=None, contextWindowSize=None, agentType="Plan", name=None)])
-        content = strip(row["content"])
-        self.assertIn("Plan", content)
-        self.assertNotIn(keyblade.FORM_ICON, content)
-        self.assertNotIn(keyblade.KEYBLADE_ICON, content)
-
     def test_disabled(self):
         self.assertEqual(self.rows([self.task()], party_panel=False), [])
 
-    def test_name_sanitized(self):
-        (row,) = self.rows([self.task(name="evil\x1b[2Jname")])
-        self.assertNotIn("\x1b[2J", row["content"])
+    def test_label_sanitized(self):
+        (raw,) = self.rows([self.task(label="evil\x1b[2Jlabel")])
+        self.assertNotIn("\x1b[2J", raw["content"])
+
+    def test_assignments_pruned(self):
+        for i in range(120):
+            self.rows([self.task(f"p{i}")], now=self.NOW + i)
+        self.assertEqual(len(keyblade._read_state()["party"]), 100)
 
 
 # ─── State & settings ────────────────────────────────────────────

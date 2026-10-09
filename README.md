@@ -6,7 +6,7 @@ Kingdom Hearts themed statusline and command menu for Claude Code.
 
 **Keyblade Status Line** — HP/MP bars, keyblade name, auth badge, munny counter, and more displayed in the Claude Code status bar.
 
-**Party Panel** — subagents show up as party members (keyblade, Drive Form, MP bar) in Claude Code's agent panel.
+**Party Panel** — subagents join your party as real KH party members (Donald, Goofy, Riku, Aladdin, ...) and chatter about what they're doing in Claude Code's agent panel.
 
 **Command Menu** — `/kh-menu` slash command that presents contextual dev actions organized as Attack, Magic, Items, and Summon in KH battle menu style.
 
@@ -99,14 +99,28 @@ Claude Code doesn't put the auth method in the statusline payload, so keyblade a
 
 ## Party Panel
 
-The installer sets `subagentStatusLine` to `keyblade.py --party`. Each subagent row becomes:
+The installer sets `subagentStatusLine` to `keyblade.py --party`. Each subagent joins your party as a real KH party member and tells you what they're up to:
 
 ```
-▸ ♦ Explore  🗝  Kingdom Key  ✶ Valor  ✧ ████▉  81%  ⏱ 1m35s  Searching for statusline payload handling
-✓ ♦ code-reviewer  🗝  Ultima Weapon  ✶ Master  ✧ ██     36%  Reviewed keyblade.py: 2 findings
+✦ Aladdin  "Searching for statusline payload handling…"                 1m35s
+✦ Donald   "Auditing the auth flow…"                         ♥ 12% low  3m10s
+✓ Riku     "Reviewed keyblade.py: 2 findings"                           4m02s
+✗ Simba    KO — "Ran out of context"
 ```
 
-Set `"party_panel": false` to keep Claude Code's default rows.
+- ✦ twinkles while they work, ✓ done (with their total time), ✗ KO when they fail or are stopped
+- ♥ appears only when a member's context is running low (under 25% left)
+
+Members are picked by role (from the subagent's type or name), and each keeps theirs for its whole run:
+
+| Role | Member | | Role | Member |
+|---|---|---|---|---|
+| security, audit | Donald | | plan, architect | Mulan |
+| test, QA | Goofy | | debug, investigate | Tron |
+| review | Riku | | docs, writer | Beast |
+| explore, search | Aladdin | | PR, release, deploy | Jack Sparrow |
+
+Everyone else, and a second agent with the same role, gets a world guest: Simba, Auron, Ariel, Tarzan, Hercules, Rapunzel, Baymax, Sulley, Peter Pan, Woody. Pick your own with `party_members`, e.g. `{"Explore": "Tarzan", "my-agent": "Ariel"}` (matched against the agent type or name). Set `"party_panel": false` to keep Claude Code's default rows.
 
 ## Configuration
 
@@ -182,7 +196,8 @@ EXP is tied to the same source as level.
 | `show_fast_mode` | `true` | Show ⚡ when fast mode is on |
 | `show_party` | `true` | Show the `--agent` party member |
 | `show_vim_mode` | `false` | Show `-- NORMAL --` etc. Pair with `"hideVimModeIndicator": true` in the `statusLine` settings |
-| `party_panel` | `true` | Render subagent rows (`--party` mode) |
+| `party_panel` | `true` | Render subagents as party members (`--party` mode) |
+| `party_members` | `{}` | Choose party members by agent type or name, e.g. `{"Explore": "Tarzan"}` |
 | `colors.hp` | `"green"` | HP bar when healthy (shifts amber/red when low) |
 | `colors.mp` | `"blue"` | MP bar |
 | `colors.munny` | `"yellow"` | Munny counter |

@@ -196,7 +196,10 @@ Show the `--agent` name as a party member. true/false. Default: true.
 Show `-- NORMAL --` etc. in the statusline. Default: false. If enabled, also suggest setting `"hideVimModeIndicator": true` in the `statusLine` block of `~/.claude/settings.json` so the mode isn't shown twice.
 
 ### party_panel
-Render subagents as party members in Claude Code's agent panel (`subagentStatusLine`). true/false. Default: true.
+Render subagents as party members in Claude Code's agent panel (`subagentStatusLine`): `✦ Aladdin  "Searching…"  1m35s`, ✓ when done, ✗ KO when failed, ♥ only when their context runs low. true/false. Default: true.
+
+### party_members
+Choose which party member a subagent becomes, keyed by agent type or name: `{"Explore": "Tarzan", "my-agent": "Ariel"}`. Default: {} (built-in roles: security→Donald, test→Goofy, review→Riku, explore→Aladdin, plan→Mulan, debug→Tron, docs→Beast, PR/release→Jack Sparrow; others get world guests like Simba, Auron, Ariel). Only suggest real KH party members (characters who fight in Sora's party).
 
 ### responsive / hyperlinks / color_mode
 - `responsive` — fit lines to the terminal width, dropping the least important segments first. Default: true.

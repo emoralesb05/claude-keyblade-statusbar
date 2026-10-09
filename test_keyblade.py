@@ -125,6 +125,9 @@ class KeybladeTestCase(unittest.TestCase):
         path = os.path.join(self.tmp, name)
         os.makedirs(path)
         git(path, "init", "-q", "-b", "main")
+        # Repo-local identity so the user's global git config can't leak in
+        git(path, "config", "user.email", "sora@example.com")
+        git(path, "config", "user.name", "Sora")
         if commit:
             self.write(path, "README.md", "line 1\nline 2\nline 3\n")
             git(path, "add", "README.md")
@@ -950,12 +953,12 @@ class TestLevelUp(KeybladeTestCase):
 
     def test_same_level_no_notification_after_duration(self):
         # Set state with expired timestamp
-        keyblade._write_project_state({}, {"level_up": {"level": 5, "ts": 0}})
+        keyblade._write_level_state({}, 5, 0)
         result = keyblade.check_level_up(5)
         self.assertFalse(result)
 
     def test_level_increase_triggers_notification(self):
-        keyblade._write_project_state({}, {"level_up": {"level": 3, "ts": 0}})
+        keyblade._write_level_state({}, 3, 0)
         result = keyblade.check_level_up(4)
         self.assertTrue(result)
 
@@ -1226,9 +1229,12 @@ class TestPlanUsageHP(KeybladeTestCase):
     def test_unknown_auth_uses_cost_budget(self):
         self.assertEqual(keyblade.resolve_hp(make_data(), self.config())["source"], "cost_budget")
 
-    def test_subscriber_without_any_data_is_full(self):
-        subscriber = {"method": "claude.ai", "provider": "firstParty", "plan": "pro"}
-        self.assertEqual(keyblade.resolve_hp(make_data(), self.config(), auth=subscriber)["pct"], 100.0)
+    def test_subscriber_without_plan_data_uses_cost_budget(self):
+        # Team/Enterprise never get rate_limits; Pro/Max before any data exists
+        for plan in ("team", "enterprise", "pro"):
+            subscriber = {"method": "claude.ai", "provider": "firstParty", "plan": plan}
+            hp = keyblade.resolve_hp(make_data(), self.config(hp_budget_usd=5.0), auth=subscriber)
+            self.assertEqual((hp["source"], round(hp["pct"])), ("cost_budget", 70), plan)
 
     def test_spend_limit(self):
         data = make_data(rate_limits={"spend_limit": {
@@ -1791,6 +1797,254 @@ class TestSettingsRegistration(KeybladeTestCase):
         self.assertIn("--register-settings", err.getvalue())
 
 
+# ─── Review regressions ──────────────────────────────────────────
+
+class TestConfigRobustness(KeybladeTestCase):
+    """A hand-edited config.json (the config skill has an LLM edit it) must
+    never take the statusline down."""
+
+    def write_config(self, raw):
+        path = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "hooks", "keyblade", "config.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(raw if isinstance(raw, bytes) else raw.encode())
+
+    def test_wrong_types_fall_back_to_defaults(self):
+        self.write_config(json.dumps({"colors": None, "drive_form_names": None, "keyblade_names": "x",
+                                      "world_map": None, "drive_max_lines": "lots", "show_munny": "no",
+                                      "hp_budget_usd": 25, "theme": "full_rpg"}))
+        config = keyblade.load_config()
+        self.assertEqual(config["colors"], keyblade.DEFAULT_CONFIG["colors"])
+        self.assertEqual(config["keyblade_names"], keyblade.DEFAULT_CONFIG["keyblade_names"])
+        self.assertEqual(config["world_map"], {})
+        self.assertEqual(config["drive_max_lines"], 1000)
+        self.assertIs(config["show_munny"], True)
+        self.assertEqual((config["hp_budget_usd"], config["theme"]), (25, "full_rpg"))
+        self.assertEqual(len(keyblade.render_full_rpg(make_data(), config).split("\n")), 3)
+
+    def test_non_object_and_undecodable_configs(self):
+        for raw in ("[1]", "null", "\"classic\"", b"{\"theme\": \"caf\xe9\"}"):
+            self.write_config(raw)
+            self.assertEqual(keyblade.load_config()["theme"], "classic", raw)
+
+
+class TestSettingsSafety(KeybladeTestCase):
+    def setUp(self):
+        super().setUp()
+        self.settings = os.path.join(self.tmp, "settings.json")
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"env": {"GREETING": "café ✨"}, "permissions": {"allow": ["Bash(ls)"]}}, f)
+
+    def test_failed_write_leaves_original_intact(self):
+        with open(self.settings, "rb") as f:
+            before = f.read()
+        with self.assertRaises(TypeError):
+            keyblade._write_settings(self.settings, {"unserializable": {1, 2}})
+        with open(self.settings, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith(".settings.keyblade.")], [])
+
+    def test_symlink_and_mode_preserved(self):
+        real = os.path.join(self.tmp, "dotfiles-settings.json")
+        os.rename(self.settings, real)
+        os.symlink(real, self.settings)
+        os.chmod(real, 0o640)
+        keyblade.register_settings(self.settings, "/k/keyblade.py")
+        self.assertTrue(os.path.islink(self.settings))
+        self.assertEqual(os.stat(real).st_mode & 0o777, 0o640)
+        with open(real, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["env"]["GREETING"], "café ✨")
+        self.assertIn("statusLine", saved)
+
+    def test_keyblade_wrapper_scripts_are_not_ours(self):
+        with open(self.settings, "w") as f:
+            json.dump({"statusLine": {"type": "command", "command": "~/bin/statusline-with-keyblade.sh"}}, f)
+        keyblade.register_settings(self.settings, "/k/keyblade.py")
+        with open(self.settings) as f:
+            self.assertEqual(json.load(f)["_statusLine_backup"]["command"], "~/bin/statusline-with-keyblade.sh")
+        keyblade.unregister_settings(self.settings)
+        with open(self.settings) as f:
+            self.assertEqual(json.load(f)["statusLine"]["command"], "~/bin/statusline-with-keyblade.sh")
+
+    def test_command_matching(self):
+        self.assertTrue(keyblade._is_keyblade_command({"command": "python3 /x/hooks/keyblade/keyblade.py"}))
+        self.assertTrue(keyblade._is_keyblade_command("python3 '/a b/keyblade.py' --party"))
+        self.assertFalse(keyblade._is_keyblade_command({"command": "~/bin/keyblade-wrapper.sh"}))
+        self.assertFalse(keyblade._is_keyblade_command({"command": None}))
+
+
+class TestReviewRegressions(KeybladeTestCase):
+    def test_mp_zero_remaining_is_empty_not_full(self):
+        data = make_data()
+        data["context_window"]["remaining_percentage"] = 0
+        self.assertEqual(keyblade.calculate_mp(data), 0)
+        self.assertIn("Anti Form", keyblade.render_classic(data, self.config()))
+
+    def test_file_named_head_does_not_break_line_count(self):
+        repo = self.make_repo()
+        self.write(repo, "README.md", "line 1\nchanged\nline 3\nline 4\n")
+        self.write(repo, "web/HEAD", "")
+        info = keyblade.git_info(self.repo_data(os.path.join(repo, "web")), self.config(git_cache_ttl=0))
+        self.assertEqual(info["lines"], 3)
+
+    def test_untracked_fifo_symlink_does_not_hang(self):
+        repo = self.make_repo()
+        fifo = os.path.join(self.tmp, "pipe")
+        os.mkfifo(fifo)
+        os.symlink(fifo, os.path.join(repo, "link-to-pipe"))
+        outside = self.write(self.tmp, "outside.txt", "1\n" * 500)
+        os.symlink(outside, os.path.join(repo, "link-to-outside"))
+        info = keyblade.git_info(self.repo_data(repo), self.config(git_cache_ttl=0))
+        self.assertEqual((info["untracked"], info["lines"]), (2, 0))
+
+    def test_level_up_is_per_session(self):
+        a = make_data(session_id="A")
+        b = make_data(session_id="B")
+        a["cost"].update(total_lines_added=500, total_lines_removed=0)
+        b["cost"].update(total_lines_added=10, total_lines_removed=0)
+        keyblade._write_level_state(a, 6, 0)
+        keyblade._write_level_state(b, 1, 0)
+        cfg = self.config(theme="full_rpg")
+        for data in (a, b, a, b):
+            self.assertNotIn("LEVEL UP", keyblade.render_full_rpg(data, cfg), data["session_id"])
+
+    def test_projects_map_is_pruned(self):
+        for i in range(60):
+            keyblade._write_project_state(make_data(workspace={"current_dir": f"/w/p{i}"}), {"save_point": {}})
+        projects = keyblade._read_state()["projects"]
+        self.assertEqual(len(projects), 50)
+        self.assertIn("/w/p59", projects)
+        self.assertNotIn("/w/p0", projects)
+
+    def test_party_name_truncated_to_columns(self):
+        task = {"id": "t", "name": "a-very-long-custom-agent-name-for-testing", "status": "running"}
+        (row,) = keyblade.render_party({"columns": 30, "tasks": [task]}, self.config())
+        self.assertLessEqual(keyblade.visible_width(json.loads(row)["content"]), 30)
+
+
+class TestSessionProgressAccuracy(KeybladeTestCase):
+    def commit(self, repo, name, email="sora@example.com"):
+        self.write(repo, name, "x\n")
+        git(repo, "add", name)
+        subprocess.run(["git", "-c", "user.name=X", "-c", f"user.email={email}", "-c", "commit.gpgsign=false",
+                        "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", name],
+                       cwd=repo, check=True, capture_output=True)
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.make_repo()
+        git(self.repo, "config", "user.email", "sora@example.com")
+        self.cfg = self.config(level_source="commits", git_cache_ttl=0)
+
+    def exp(self, source="commits", cwd=None):
+        return keyblade.calculate_exp(self.repo_data(cwd or self.repo), dict(self.cfg, level_source=source))
+
+    def test_branch_switch_does_not_count_existing_commits(self):
+        git(self.repo, "checkout", "-q", "-b", "feature")
+        for i in range(5):
+            self.commit(self.repo, f"f{i}.txt")
+        git(self.repo, "checkout", "-q", "main")
+        time.sleep(1.1)  # session starts after those commits
+        self.assertEqual(self.exp(), 0)
+        git(self.repo, "checkout", "-q", "feature")
+        self.assertEqual(self.exp(), 0)
+
+    def test_other_authors_do_not_count(self):
+        self.assertEqual(self.exp(), 0)
+        self.commit(self.repo, "mine.txt")
+        self.commit(self.repo, "theirs.txt", email="riku@example.com")
+        self.assertEqual(self.exp(), 1)
+
+    def test_cwd_changes_keep_progress(self):
+        os.makedirs(os.path.join(self.repo, "sub"))
+        self.assertEqual(self.exp(), 0)
+        self.commit(self.repo, "a.txt")
+        self.assertEqual(self.exp(cwd=os.path.join(self.repo, "sub")), 1)
+        self.assertEqual(self.exp(), 1)
+
+    def test_preexisting_dirty_files_are_not_progress(self):
+        self.write(self.repo, "README.md", "already dirty\n")
+        self.write(self.repo, "old-untracked.txt", "1\n")
+        self.assertEqual(self.exp("files"), 0)
+        self.write(self.repo, "new.txt", "1\n")
+        self.commit(self.repo, "committed.txt")
+        self.assertEqual(self.exp("files"), 2)
+
+
+class TestInstallScripts(KeybladeTestCase):
+    """install.sh / uninstall.sh end to end in a sandbox config dir."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = os.path.join(self.tmp, "claude-home")
+        os.makedirs(self.base)
+        self.settings = os.path.join(self.base, "settings.json")
+        with open(self.settings, "w") as f:
+            json.dump({"model": "opus", "statusLine": {"type": "command", "command": "~/mine.sh"}}, f)
+        self.hooks = os.path.join(self.base, "hooks", "keyblade")
+
+    def sh(self, script, *args):
+        env = {k: v for k, v in os.environ.items() if k not in ISOLATED_ENV}
+        env.update(CLAUDE_CONFIG_DIR=self.base, TMPDIR=self.tmp + "/")
+        return subprocess.run(["bash", script, *args], capture_output=True, text=True, env=env, timeout=60)
+
+    def read_settings(self):
+        with open(self.settings) as f:
+            return json.load(f)
+
+    def test_install_update_uninstall(self):
+        r = self.sh(os.path.join(HERE, "install.sh"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keyblade.py", self.read_settings()["statusLine"]["command"])
+        # Customize, then update: config survives
+        with open(os.path.join(self.hooks, "config.json"), "w") as f:
+            json.dump({"theme": "minimal", "hp_budget_usd": 42}, f)
+        self.assertEqual(self.sh(os.path.join(HERE, "install.sh")).returncode, 0)
+        with open(os.path.join(self.hooks, "config.json")) as f:
+            self.assertEqual(json.load(f), {"theme": "minimal", "hp_budget_usd": 42})
+        # Uninstall restores the previous statusLine and clears runtime state
+        for name in ("keyblade_state.json", "keyblade_git_abc.json", "keyblade_anchor_abc.json"):
+            open(os.path.join(self.tmp, name), "w").close()
+        r = self.sh(os.path.join(self.hooks, "uninstall.sh"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read_settings(), {"model": "opus", "statusLine": {"type": "command", "command": "~/mine.sh"}})
+        self.assertFalse(os.path.exists(self.hooks))
+        self.assertFalse([n for n in os.listdir(self.tmp) if n.startswith("keyblade_")])
+
+    def test_dangling_symlinks_from_homebrew_keep_config(self):
+        os.makedirs(self.hooks)
+        os.symlink("/nonexistent/Cellar/1.0/keyblade.py", os.path.join(self.hooks, "keyblade.py"))
+        with open(os.path.join(self.hooks, "config.json"), "w") as f:
+            json.dump({"theme": "minimal"}, f)
+        r = self.sh(os.path.join(HERE, "install.sh"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.islink(os.path.join(self.hooks, "keyblade.py")))
+        with open(os.path.join(self.hooks, "config.json")) as f:
+            self.assertEqual(json.load(f), {"theme": "minimal"})
+
+    def test_install_does_not_write_through_symlinks(self):
+        os.makedirs(self.hooks)
+        cellar = self.write(self.tmp, "cellar/keyblade.py", "# brew-owned\n")
+        os.symlink(cellar, os.path.join(self.hooks, "keyblade.py"))
+        self.assertEqual(self.sh(os.path.join(HERE, "install.sh")).returncode, 0)
+        with open(cellar) as f:
+            self.assertEqual(f.read(), "# brew-owned\n")
+
+    def test_theme_argument(self):
+        r = self.sh(os.path.join(HERE, "install.sh"), "full_rpg")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.hooks, "config.json")) as f:
+            self.assertEqual(json.load(f)["theme"], "full_rpg")
+
+    def test_unknown_theme_rejected_before_any_change(self):
+        r = self.sh(os.path.join(HERE, "install.sh"), "full_rpgg'; import os #")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("unknown theme", r.stdout)
+        self.assertFalse(os.path.exists(self.hooks))
+        self.assertEqual(self.read_settings()["statusLine"]["command"], "~/mine.sh")
+
+
 # ─── End to end (subprocess, like Claude Code runs it) ───────────
 
 class TestCommandLine(KeybladeTestCase):
@@ -1858,6 +2112,22 @@ class TestCommandLine(KeybladeTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(self.tmp, "cli_state.json")) as f:
             self.assertEqual(json.load(f)["auth_cache"]["k1"]["status"]["subscriptionType"], "pro")
+
+    def test_bad_config_prints_fallback_not_blank(self):
+        cfg = os.path.join(self.tmp, "claude", "hooks", "keyblade", "config.json")
+        os.makedirs(os.path.dirname(cfg))
+        with open(cfg, "w") as f:
+            f.write('{"colors": null, "keyblade_names": "x", "world_map": null}')
+        r = self.run_script(stdin=json.dumps(make_data()))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Ultima Weapon", r.stdout)
+
+    def test_non_utf8_locale_and_lone_surrogate(self):
+        payload = json.dumps(make_data())[:-1] + ', "session_name": "abc\\ud83d"}'
+        r = self.run_script(stdin=payload, LC_ALL="en_US.ISO8859-1", LANG="en_US.ISO8859-1",
+                            PYTHONIOENCODING="")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Ultima Weapon", r.stdout)
 
     def test_preview(self):
         r = self.run_script(["--preview", "--width", "100"])

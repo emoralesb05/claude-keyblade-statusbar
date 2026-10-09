@@ -72,14 +72,14 @@ Which statusline layout to use.
 
 ### hp_source
 What the HP bar tracks. Goes down as usage increases.
-- `auto` (default) — picks by how the session authenticates: claude.ai subscribers get whichever plan window (5-hour or 7-day) is closer to its cap; Claude apps gateway users get their spend limit; API key / Bedrock / Vertex / Foundry sessions get cost_budget.
+- `auto` (default) — picks by how the session authenticates: claude.ai subscribers get whichever plan window (5-hour or 7-day) is closer to its cap; Claude apps gateway users get their spend limit; API key / Bedrock / Vertex / Foundry sessions, and Team/Enterprise plans (no plan limits in the payload), get cost_budget.
 - `5_hour` — 5-hour plan usage window (Pro/Max). From the `rate_limits` field Claude Code sends.
 - `7_day` — 7-day plan usage window (Pro/Max).
 - `spend_limit` — Claude apps gateway spend limit (shows `$used/$limit`).
 - `cost_budget` — session cost vs hp_budget_usd (API key users).
 
 ### hp_budget_usd
-The dollar budget for HP when using cost_budget (or auto on an API key). Default: 5.00. When you spend this much, HP hits 0.
+The per-session dollar budget for HP when using cost_budget (or auto on an API key). Default: 5.00. When a session spends this much, HP hits 0; it resets with each new session or /clear.
 
 ### show_hp_reset
 Show the ✚ Cure countdown until the plan window resets. true/false. Default: true.
@@ -119,8 +119,8 @@ Maximum level cap. Default: 99 (like Kingdom Hearts).
 What counts toward leveling and EXP (EXP is tied to the same source).
 - `lines` — total lines modified (added + removed)
 - `added_only` — only lines added
-- `commits` — commits made since the session started
-- `files` — files touched since the session started (committed, modified, or new)
+- `commits` — your commits (by git user.email) since the session started; switching to a branch with older commits doesn't count
+- `files` — files you've committed or changed since the session started; files already dirty at session start don't count
 
 ### show_drive
 Show the drive gauge bar. true/false. Default: true. Only visible in full_rpg theme.

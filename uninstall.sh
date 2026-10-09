@@ -36,6 +36,12 @@ if [ -d "$INSTALL_DIR" ]; then
   echo "  Removed $INSTALL_DIR"
 fi
 
+# Remove runtime state and caches (same directory Python's tempfile uses)
+TMP_ROOT="${TMPDIR:-/tmp}"
+TMP_ROOT="${TMP_ROOT%/}"
+rm -f "$TMP_ROOT"/keyblade_state.json "$TMP_ROOT"/keyblade_git_*.json "$TMP_ROOT"/keyblade_anchor_*.json
+echo "  Removed cached state"
+
 echo ""
 echo "  === Uninstall complete ==="
 echo "  May your heart be your guiding key."

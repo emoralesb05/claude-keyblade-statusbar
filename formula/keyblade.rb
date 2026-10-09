@@ -20,7 +20,9 @@ class Keyblade < Formula
       #!/bin/bash
       set -euo pipefail
 
-      LIBEXEC="#{libexec}"
+      # opt_libexec is the stable path; libexec is the versioned keg that
+      # `brew upgrade` deletes, which would leave every symlink dangling.
+      LIBEXEC="#{opt_libexec}"
       BASE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
       INSTALL_DIR="$BASE_DIR/hooks/keyblade"
       SETTINGS="$BASE_DIR/settings.json"
@@ -42,6 +44,11 @@ class Keyblade < Formula
         esac
       done
 
+      case "$THEME" in
+        ""|classic|minimal|full_rpg) ;;
+        *) echo "Error: unknown theme '$THEME' (use classic, minimal, or full_rpg)"; exit 1 ;;
+      esac
+
       echo ""
       echo "  ====================================="
       echo "  keyblade — Kingdom Hearts StatusLine"
@@ -55,11 +62,11 @@ class Keyblade < Formula
       fi
       command -v python3 &>/dev/null || { echo "Error: python3 is required"; exit 1; }
 
-      # Detect update vs fresh
-      UPDATING=false
-      [ -f "$INSTALL_DIR/keyblade.py" ] && UPDATING=true
+      # Detect update vs fresh. Key off the config — it's what must survive.
+      HAS_CONFIG=false
+      [ -f "$INSTALL_DIR/config.json" ] && HAS_CONFIG=true
 
-      if [ "$UPDATING" = true ]; then
+      if [ "$HAS_CONFIG" = true ] || [ -e "$INSTALL_DIR/keyblade.py" ]; then
         echo "  Existing install found. Updating..."
       else
         echo "  May your heart be your guiding key."
@@ -72,8 +79,8 @@ class Keyblade < Formula
       ln -sf "$LIBEXEC/VERSION" "$INSTALL_DIR/VERSION"
       ln -sf "$LIBEXEC/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
 
-      # Copy config only on fresh install
-      if [ "$UPDATING" = false ]; then
+      # Copy config only when there isn't one
+      if [ "$HAS_CONFIG" = false ]; then
         cp "$LIBEXEC/config.json" "$INSTALL_DIR/config.json"
         echo "  Created config: $INSTALL_DIR/config.json"
       else

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.1
+
+Fixed
+- A failed write (disk full, killed mid-write) could leave `settings.json` truncated; it's now replaced atomically, keeping symlinks, permissions and non-ASCII text.
+- A wrong-typed value in `config.json` (e.g. `"colors": null`) blanked the statusline; bad values now fall back to defaults and any render error shows the fallback.
+- Homebrew: `keyblade-setup` linked to the versioned keg, so `brew upgrade` left the statusline pointing at deleted files, and re-running setup then reset `config.json`. It now uses `opt_libexec` and only creates the config when it's missing. `install.sh` likewise keys updates off `config.json` and no longer writes through Homebrew's symlinks.
+- `level_source: "commits"` / `"files"` counted another branch's history after a checkout, other people's pulled commits, files already dirty when the session started, and reset when the session changed directory. They now count your commits since the session started (plus files changed this session).
+- 「LEVEL UP!」 flickered when two sessions worked in the same repo; level-up state is per session.
+- HP was stuck at 100% for Team/Enterprise plans (no plan limits in the payload); `auto` now falls back to the cost budget.
+- MP showed full when `remaining_percentage` was `0`.
+- A file named `head` in the working directory (case-insensitive filesystems) broke the uncommitted line count.
+- An untracked symlink to a FIFO could hang every render; only regular files are line-counted.
+- Commands that merely contain "keyblade" (e.g. a wrapper script) were treated as keyblade's own and replaced without backup.
+- Non-UTF-8 locales and lone surrogates in payload strings blanked the statusline.
+- Long subagent names overflowed party panel rows.
+
+Install
+- `install.sh` and `keyblade-setup --theme=` reject unknown themes before changing anything.
+- Uninstall also removes cached state from `$TMPDIR`.
+- The per-project state map is pruned to the 50 most recent projects.
+
 ## 1.1.0
 
 New

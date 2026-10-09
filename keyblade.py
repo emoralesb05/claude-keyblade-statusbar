@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -214,6 +215,25 @@ WORKTREE_ICON = "⎇"      # ⎇ Branching path — an alternate world (git work
 
 # ─── Config Loading ──────────────────────────────────────────────
 
+def _valid_config_values(user_config):
+    """Drop user values whose type doesn't match the default's, so a stray
+    null or string in a hand-edited config can't break every render."""
+    valid = {}
+    for key, value in user_config.items():
+        default = DEFAULT_CONFIG.get(key)
+        if key not in DEFAULT_CONFIG:
+            ok = True
+        elif isinstance(default, bool):
+            ok = isinstance(value, bool)
+        elif isinstance(default, (int, float)):
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        else:
+            ok = isinstance(value, type(default))
+        if ok:
+            valid[key] = value
+    return valid
+
+
 def load_config():
     """Load config with fallback to defaults."""
     config_dir = os.environ.get(
@@ -224,17 +244,19 @@ def load_config():
     config = dict(DEFAULT_CONFIG)
 
     try:
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             user_config = json.load(f)
+    except (OSError, ValueError):
+        user_config = {}
+    if isinstance(user_config, dict):
+        user_config = _valid_config_values(user_config)
         config.update(user_config)
         # Deep merge nested dicts
         for key in ("colors", "keyblade_names", "drive_form_names", "drive_form_colors"):
-            if key in DEFAULT_CONFIG and key in user_config:
+            if key in user_config:
                 merged = dict(DEFAULT_CONFIG[key])
                 merged.update(user_config[key])
                 config[key] = merged
-    except (FileNotFoundError, json.JSONDecodeError, PermissionError):
-        pass
 
     # Apply color_mode from config (override auto-detection)
     global ANSI
@@ -323,12 +345,14 @@ def _read_project_state(data):
 
 
 def _write_project_state(data, project_state):
-    """Write per-project state, preserving global and other project state."""
+    """Write per-project state, preserving global and other project state.
+
+    Stamped with "ts" so the map can be pruned to recently used projects.
+    """
     state = _read_state()
-    key = _project_key(data)
-    if "projects" not in state:
-        state["projects"] = {}
-    state["projects"][key] = project_state
+    projects = state.get("projects") or {}
+    projects[_project_key(data)] = dict(project_state, ts=time.time())
+    state["projects"] = _prune(projects, keep=50)
     _write_state(state)
 
 
@@ -774,10 +798,11 @@ def resolve_hp(data, config, auth=None):
         auth = resolve_auth(data, config)
     if _plan_windows_from_payload(data) or is_subscription(auth):
         windows = get_plan_usage(data)
-        if not windows:
-            return _hp_full("five_hour")
-        name = max(windows, key=lambda n: windows[n]["used"])
-        return _hp_from_window(name, windows[name])
+        if windows:
+            name = max(windows, key=lambda n: windows[n]["used"])
+            return _hp_from_window(name, windows[name])
+    # No plan data: API key / 3P, a Team or Enterprise plan (Claude Code only
+    # sends rate_limits to Pro and Max), or a subscriber before any data exists
     return _hp_from_spend_limit(data) or _hp_from_budget(data, config)
 
 
@@ -873,7 +898,9 @@ def calculate_mp(data):
             used_pct = min(100.0, tokens / window_size * 100.0)
             return max(0.0, 100.0 - used_pct)
 
-    return ctx.get("remaining_percentage", 100) or 100
+    remaining = ctx.get("remaining_percentage")
+    # 0 is a real reading (context full), not "missing"
+    return remaining if isinstance(remaining, (int, float)) else 100
 
 
 # ─── Git ─────────────────────────────────────────────────────────
@@ -899,8 +926,14 @@ def _git(work_dir, *args):
 
 
 def _count_file_lines(path):
-    """Count newlines like `wc -l`; binary files count as 0."""
+    """Count newlines like `wc -l`; binary files count as 0.
+
+    Only regular files: an untracked symlink to a FIFO would block the read
+    (and every render after it), and one pointing outside the repo isn't work.
+    """
     try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return 0
         with open(path, "rb") as f:
             chunk = f.read(MAX_UNTRACKED_BYTES)
     except OSError:
@@ -931,8 +964,10 @@ def _collect_git_info(work_dir, include_untracked):
     )
     if status is None:
         return None
-    info = {"branch": "", "head": "", "ahead": 0, "behind": 0, "files": 0, "lines": 0, "untracked": 0}
+    info = {"branch": "", "head": "", "ahead": 0, "behind": 0, "files": 0, "lines": 0,
+            "untracked": 0, "top": "", "paths": []}
     untracked = []
+    paths = []
     entries = status.split("\0")
     i = 0
     while i < len(entries):
@@ -948,15 +983,22 @@ def _collect_git_info(work_dir, include_untracked):
                 except ValueError:
                     continue
                 info["ahead" if part.startswith("+") else "behind"] = n
-        elif e[:2] in ("1 ", "u "):
+        elif e.startswith("1 "):
             info["files"] += 1
+            paths.append(e.split(" ", 8)[-1])
         elif e.startswith("2 "):
             info["files"] += 1
+            paths.append(e.split(" ", 9)[-1])
             i += 1  # renames/copies carry the original path as an extra field
+        elif e.startswith("u "):
+            info["files"] += 1
+            paths.append(e.split(" ", 10)[-1])
         elif e.startswith("? "):
             info["files"] += 1
             untracked.append(e[2:])
+            paths.append(e[2:])
         i += 1
+    info["paths"] = paths[:MAX_UNTRACKED_FILES]
 
     if info["head"] == "(initial)":
         info["head"] = ""
@@ -965,18 +1007,19 @@ def _collect_git_info(work_dir, include_untracked):
 
     # Changed lines vs HEAD (staged + unstaged). A repo with no commits yet
     # has no HEAD, so diff the index and the worktree separately.
+    # Trailing "--" keeps a file named "head" (case-insensitive FS) from
+    # making HEAD ambiguous.
     if info["head"]:
-        info["lines"] = _sum_numstat(_git(work_dir, "diff", "HEAD", "--numstat"))
+        info["lines"] = _sum_numstat(_git(work_dir, "diff", "HEAD", "--numstat", "--"))
     else:
-        info["lines"] = (_sum_numstat(_git(work_dir, "diff", "--cached", "--numstat"))
-                         + _sum_numstat(_git(work_dir, "diff", "--numstat")))
+        info["lines"] = (_sum_numstat(_git(work_dir, "diff", "--cached", "--numstat", "--"))
+                         + _sum_numstat(_git(work_dir, "diff", "--numstat", "--")))
 
     # git diff can't see untracked files; status paths are repo-root relative.
+    info["top"] = (_git(work_dir, "rev-parse", "--show-toplevel") or "").strip()
     info["untracked"] = len(untracked)
-    if untracked:
-        top = (_git(work_dir, "rev-parse", "--show-toplevel") or "").strip() or work_dir
-        for rel in untracked[:MAX_UNTRACKED_FILES]:
-            info["lines"] += _count_file_lines(os.path.join(top, rel))
+    for rel in untracked[:MAX_UNTRACKED_FILES]:
+        info["lines"] += _count_file_lines(os.path.join(info["top"] or work_dir, rel))
     return info
 
 
@@ -1087,36 +1130,55 @@ def calculate_drive(data, config=None):
 
 
 def _session_progress(data, config):
-    """(commits, files) since this session started, measured against the HEAD
-    recorded the first time the session was seen in this directory."""
-    work_dir = _work_dir(data)
+    """(commits, files) this session, for level_source commits/files.
+
+    Commits: your commits (by user.email) made since the session was first
+    seen in this repo, reachable from HEAD — a branch switch or pull doesn't
+    count someone else's history. Files: files in those commits, plus files
+    dirty now that weren't already dirty when the session started.
+
+    The anchor lives in its own file per (session, repo), so the slow git
+    calls here never race the shared state file.
+    """
     info = git_info(data, config)
-    if not work_dir or info is None:
+    if info is None or not info.get("top"):
         return 0, 0
-    key = data.get("session_id") or "_default"
-    state = _read_state()
-    anchors = state.get("anchors") or {}
-    anchor = anchors.get(key)
-    if not isinstance(anchor, dict) or anchor.get("dir") != work_dir:
-        anchor = {"dir": work_dir, "sha": info.get("head", ""), "ts": 0}
+    top = info["top"]
+    key = hashlib.sha1(f"{data.get('session_id') or '_default'}\0{top}".encode()).hexdigest()[:16]
+    path = os.path.join(GIT_CACHE_DIR, f"keyblade_anchor_{key}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            anchor = json.load(f)
+        if not isinstance(anchor, dict) or not isinstance(anchor.get("start"), (int, float)):
+            raise ValueError("bad anchor")
+    except (OSError, ValueError):
+        email = (_git(top, "config", "user.email") or "").strip()
+        anchor = {"start": int(time.time()), "head": info.get("head", ""), "email": email,
+                  "baseline": info.get("paths", []), "ts": 0}
+        _atomic_write_json(path, anchor)
+
     now = time.time()
     if now - anchor.get("ts", 0) >= (config.get("git_cache_ttl", 5) or 0):
-        sha = anchor["sha"]
-        commits = 0
+        commits, committed = 0, set()
         if info.get("head"):
-            out = _git(work_dir, "rev-list", "--count", f"{sha}..HEAD" if sha else "HEAD")
-            commits = int(out.strip()) if out and out.strip().isdigit() else 0
-        if sha:
-            changed = _git(work_dir, "diff", "--name-only", sha)
-        elif info.get("head"):
-            changed = _git(work_dir, "ls-files")
-        else:
-            changed = _git(work_dir, "diff", "--cached", "--name-only")
-        files = len([l for l in (changed or "").splitlines() if l.strip()])
-        anchor.update(commits=commits, files=files + info.get("untracked", 0), ts=now)
-        anchors[key] = anchor
-        state["anchors"] = _prune(anchors)
-        _write_state(state)
+            limits = [f"--since=@{int(anchor['start'])}"]
+            if anchor.get("email"):
+                limits += [f"--author={anchor['email']}", "--fixed-strings"]
+            # --since has 1s resolution, so also exclude what HEAD already held
+            # at session start; fall back if that commit is gone (rebase + gc).
+            revs = ["HEAD", f"^{anchor['head']}"] if anchor.get("head") else ["HEAD"]
+            out = _git(top, "rev-list", "--count", *limits, *revs, "--")
+            if out is None and len(revs) > 1:
+                revs = ["HEAD"]
+                out = _git(top, "rev-list", "--count", *limits, *revs, "--")
+            out = (out or "").strip()
+            commits = int(out) if out.isdigit() else 0
+            if commits:
+                log = _git(top, "log", *limits, "--name-only", "--format=", *revs, "--")
+                committed = {l for l in (log or "").splitlines() if l.strip()}
+        fresh = set(info.get("paths", [])) - set(anchor.get("baseline", []))
+        anchor.update(commits=commits, files=len(committed | fresh), ts=now)
+        _atomic_write_json(path, anchor)
     return anchor.get("commits", 0), anchor.get("files", 0)
 
 
@@ -1237,28 +1299,40 @@ def mp_charge_marker(mp_pct):
 LEVEL_UP_DURATION = 10  # seconds to show level-up notification
 
 
+def _level_key(data):
+    """Level comes from per-session counters, so level-up state is per session
+    (two sessions in one repo would otherwise flip each other's badge)."""
+    return data.get("session_id") or _project_key(data)
+
+
+def _write_level_state(data, level, leveled_at):
+    """Store {"level", "at": level-up time, "ts": last write (for pruning)}."""
+    state = _read_state()
+    levels = state.get("levels") or {}
+    levels[_level_key(data)] = {"level": level, "at": leveled_at, "ts": time.time()}
+    state["levels"] = _prune(levels, keep=50)
+    _write_state(state)
+
+
 def check_level_up(level, data=None):
     """Check if level increased since last render. Returns True if leveled up recently."""
     if data is None:
         data = {}
-    pstate = _read_project_state(data)
-    lvl_state = pstate.get("level_up", {})
+    lvl_state = (_read_state().get("levels") or {}).get(_level_key(data), {})
     prev_level = lvl_state.get("level", 0)
-    leveled_at = lvl_state.get("ts", 0)
+    leveled_at = lvl_state.get("at", 0)
 
     now = time.time()
 
     if level > prev_level:
-        pstate["level_up"] = {"level": level, "ts": now}
-        _write_project_state(data, pstate)
+        _write_level_state(data, level, now)
         return True
 
     if level == prev_level and (now - leveled_at) < LEVEL_UP_DURATION:
         return True
 
     if level != prev_level:
-        pstate["level_up"] = {"level": level, "ts": 0}
-        _write_project_state(data, pstate)
+        _write_level_state(data, level, 0)
 
     return False
 
@@ -1777,6 +1851,8 @@ def render_party_row(task, config, width=None):
     rst, bld, dim = ANSI["reset"], ANSI["bold"], ANSI["dim"]
     glyph, gcolor = TASK_STATES.get(task.get("status"), ("∙", "dim"))
     name = clean_text(task.get("name") or task.get("agentType") or "Party")
+    if width is not None:
+        name = truncate(name, max(8, width // 3))
     segs = [(0, f"{ANSI.get(gcolor, '')}{glyph}{rst} {bld}{PARTY_ICON} {name}{rst}")]
 
     model = task.get("model")
@@ -1825,17 +1901,20 @@ def render_party(payload, config):
 
 # ─── Settings Registration ───────────────────────────────────────
 
+_KEYBLADE_COMMAND_RE = re.compile(r"keyblade\.py\b")
+
+
 def _is_keyblade_command(entry):
-    if isinstance(entry, dict):
-        return "keyblade" in str(entry.get("command", ""))
-    return isinstance(entry, str) and "keyblade" in entry
+    """True for a command that runs this script (not just any 'keyblade' wrapper)."""
+    command = entry.get("command", "") if isinstance(entry, dict) else entry
+    return isinstance(command, str) and bool(_KEYBLADE_COMMAND_RE.search(command))
 
 
 def _read_settings(settings_path):
     """Read settings.json; {} when missing. Invalid JSON raises (never clobber it)."""
     if not os.path.exists(settings_path):
         return {}
-    with open(settings_path) as f:
+    with open(settings_path, encoding="utf-8") as f:
         settings = json.load(f)
     if not isinstance(settings, dict):
         raise ValueError("settings.json is not a JSON object")
@@ -1843,10 +1922,24 @@ def _read_settings(settings_path):
 
 
 def _write_settings(settings_path, settings):
-    # Plain write (not rename) so a symlinked settings.json stays a symlink.
-    with open(settings_path, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
+    """Replace settings.json atomically: a failed write (disk full, killed)
+    must never leave it truncated. Writes through a symlink to its target and
+    keeps the file's permissions."""
+    target = os.path.realpath(settings_path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".settings.keyblade.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        if os.path.exists(target):
+            shutil.copymode(target, tmp)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def register_settings(settings_path, script_path):
@@ -2032,9 +2125,21 @@ def main_settings(argv):
     return 0
 
 
+def _utf8_stdio():
+    """Claude Code speaks UTF-8 regardless of locale. Icons must encode even
+    under a non-UTF-8 locale, and lone surrogates from truncated payload
+    strings print as '?' instead of raising."""
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     command = argv[0] if argv else ""
+    _utf8_stdio()
     if command == "--party":
         return main_party()
     if command == "--preview":
@@ -2052,15 +2157,13 @@ def main(argv=None):
         print(FALLBACK)
         return 0
 
-    config = load_config()
-    theme = config.get("theme", "classic")
-    renderer = RENDERERS.get(theme, render_classic)
-
     try:
+        config = load_config()
+        renderer = RENDERERS.get(config.get("theme", "classic"), render_classic)
         output = renderer(data, config)
-        print(output)
     except Exception:
-        print(FALLBACK)
+        output = FALLBACK
+    print(output)
     return 0
 
 

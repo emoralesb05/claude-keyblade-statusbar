@@ -23,6 +23,12 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" != "bash" ] && [ -f "${
   fi
 fi
 
+THEME="${1:-}"
+case "$THEME" in
+  ""|classic|minimal|full_rpg) ;;
+  *) echo "Error: unknown theme '$THEME' (use classic, minimal, or full_rpg)"; exit 1 ;;
+esac
+
 echo ""
 echo "  ====================================="
 echo "  keyblade — Kingdom Hearts StatusLine"
@@ -40,10 +46,11 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
-# Detect update vs fresh install
-UPDATING=false
-if [ -f "$INSTALL_DIR/keyblade.py" ]; then
-  UPDATING=true
+# Detect update vs fresh install. The config is what must survive an update,
+# so key off it (a dangling symlink to keyblade.py would read as "fresh").
+HAS_CONFIG=false
+[ -f "$INSTALL_DIR/config.json" ] && HAS_CONFIG=true
+if [ -e "$INSTALL_DIR/keyblade.py" ] || [ "$HAS_CONFIG" = true ]; then
   echo "  Existing install found. Updating..."
 else
   echo "  May your heart be your guiding key."
@@ -57,42 +64,36 @@ mkdir -p "$BASE_DIR/skills/keyblade-statusbar-config"
 
 # --- Install files ---
 
-download_file() {
-  local url="$1"
+# Remove the destination first: a Homebrew setup leaves symlinks into the
+# Cellar here, and cp/curl would write through them (or fail if dangling).
+install_file() {
+  local src="$1"
   local dest="$2"
-  echo "  Downloading $(basename "$dest")..."
-  curl -fsSL "$url" -o "$dest"
+  rm -f "$dest"
+  if [ "$LOCAL_MODE" = true ]; then
+    cp "$SCRIPT_DIR/$src" "$dest"
+  else
+    echo "  Downloading $(basename "$dest")..."
+    curl -fsSL "$RAW_URL/$src" -o "$dest"
+  fi
 }
 
 if [ "$LOCAL_MODE" = true ]; then
   echo "  Installing from local source..."
-  # Copy files directly (no symlinks — works even if source dir is removed)
-  cp "$SCRIPT_DIR/keyblade.py" "$INSTALL_DIR/keyblade.py"
-  cp "$SCRIPT_DIR/VERSION" "$INSTALL_DIR/VERSION"
-  cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
-  cp "$SCRIPT_DIR/skills/kh-menu/SKILL.md" "$BASE_DIR/skills/kh-menu/SKILL.md"
-  cp "$SCRIPT_DIR/skills/keyblade-statusbar-config/SKILL.md" "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
-
-  if [ "$UPDATING" = false ]; then
-    cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/config.json"
-    echo "  Created config: $INSTALL_DIR/config.json"
-  else
-    echo "  Config preserved: $INSTALL_DIR/config.json"
-  fi
 else
   echo "  Installing from GitHub..."
-  download_file "$RAW_URL/keyblade.py" "$INSTALL_DIR/keyblade.py"
-  download_file "$RAW_URL/VERSION" "$INSTALL_DIR/VERSION"
-  download_file "$RAW_URL/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
-  download_file "$RAW_URL/skills/kh-menu/SKILL.md" "$BASE_DIR/skills/kh-menu/SKILL.md"
-  download_file "$RAW_URL/skills/keyblade-statusbar-config/SKILL.md" "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
+fi
+install_file keyblade.py "$INSTALL_DIR/keyblade.py"
+install_file VERSION "$INSTALL_DIR/VERSION"
+install_file uninstall.sh "$INSTALL_DIR/uninstall.sh"
+install_file skills/kh-menu/SKILL.md "$BASE_DIR/skills/kh-menu/SKILL.md"
+install_file skills/keyblade-statusbar-config/SKILL.md "$BASE_DIR/skills/keyblade-statusbar-config/SKILL.md"
 
-  if [ "$UPDATING" = false ]; then
-    download_file "$RAW_URL/config.json" "$INSTALL_DIR/config.json"
-    echo "  Created config: $INSTALL_DIR/config.json"
-  else
-    echo "  Config preserved: $INSTALL_DIR/config.json"
-  fi
+if [ "$HAS_CONFIG" = false ]; then
+  install_file config.json "$INSTALL_DIR/config.json"
+  echo "  Created config: $INSTALL_DIR/config.json"
+else
+  echo "  Config preserved: $INSTALL_DIR/config.json"
 fi
 
 chmod +x "$INSTALL_DIR/keyblade.py" "$INSTALL_DIR/uninstall.sh"
@@ -103,23 +104,22 @@ echo "  Installed /kh-menu and /keyblade-statusbar-config skills"
 echo "  Configuring statusline..."
 python3 "$INSTALL_DIR/keyblade.py" --register-settings "$SETTINGS"
 
-# Apply theme if specified
-THEME="${1:-}"
+# Apply theme if specified (validated above; passed as argv, not spliced into code)
 if [ -n "$THEME" ]; then
-  python3 -c "
-import json
-config_path = '$INSTALL_DIR/config.json'
+  python3 - "$INSTALL_DIR/config.json" "$THEME" <<'PY'
+import json, sys
+config_path, theme = sys.argv[1], sys.argv[2]
 try:
     with open(config_path) as f:
         cfg = json.load(f)
 except Exception:
     cfg = {}
-cfg['theme'] = '$THEME'
+cfg['theme'] = theme
 with open(config_path, 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
-print(f'  Theme set to: $THEME')
-"
+print(f'  Theme set to: {theme}')
+PY
 fi
 
 echo ""

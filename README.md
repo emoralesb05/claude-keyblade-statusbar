@@ -117,10 +117,10 @@ Edit `~/.claude/hooks/keyblade/config.json` (or run `/keyblade-statusbar-config`
 | Key | Default | Description |
 |-----|---------|-------------|
 | `hp_source` | `"auto"` | `auto`, `5_hour`, `7_day`, `spend_limit`, or `cost_budget` |
-| `hp_budget_usd` | `5.00` | Budget for `cost_budget` (and `auto` on API keys) |
+| `hp_budget_usd` | `5.00` | Per-session budget for `cost_budget` (and `auto` on API keys). Resets with each session / `/clear` |
 | `show_hp_reset` | `true` | Show the ✚ Cure countdown |
 
-`auto` picks by auth: claude.ai subscribers get whichever plan window (5-hour or 7-day) is closer to its cap; Claude apps gateway users get their spend limit; API key, Bedrock, Vertex and Foundry sessions get session cost vs `hp_budget_usd`.
+`auto` picks by auth: claude.ai subscribers get whichever plan window (5-hour or 7-day) is closer to its cap; Claude apps gateway users get their spend limit; API key, Bedrock, Vertex and Foundry sessions — and Team/Enterprise plans, which get no plan limits in the statusline payload — get session cost vs `hp_budget_usd`.
 
 Plan usage comes from the `rate_limits` field Claude Code sends (no keychain or network access). Before a session's first response, the last known values are reused so HP doesn't flash to 100%.
 
@@ -138,7 +138,7 @@ Plan usage comes from the `rate_limits` field Claude Code sends (no keychain or 
 | `level_per` | `100` | Units per level-up |
 | `level_curve` | `"linear"` | `linear` or `exponential` (RPG-style scaling) |
 | `level_max` | `99` | Level cap |
-| `level_source` | `"lines"` | `lines` (added+removed), `added_only`, `commits` (made this session), or `files` (touched this session) |
+| `level_source` | `"lines"` | `lines` (added+removed), `added_only`, `commits` (your commits this session), or `files` (files you've committed or changed this session; already-dirty files don't count) |
 
 EXP is tied to the same source as level.
 
